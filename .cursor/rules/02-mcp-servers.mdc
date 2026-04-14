@@ -1,0 +1,294 @@
+---
+description: Правила реализации MCP-серверов (market_server, news_server, analytics_server) с FastMCP
+globs: ["servers/**/*.py"]
+alwaysApply: false
+---
+
+# Правила MCP-серверов
+
+## Общая структура каждого MCP-сервера
+
+```python
+# servers/{name}_server/server.py
+from fastmcp import FastMCP, ToolError
+import structlog
+from config.settings import get_settings
+
+log = structlog.get_logger()
+settings = get_settings()
+
+mcp = FastMCP(
+    name="{name}_server",
+    instructions="Краткое описание назначения сервера для LLM-оркестратора"
+)
+
+# Аннотации по умолчанию для всех инструментов:
+# - readOnlyHint=True (только чтение)
+# - destructiveHint=False  
+# - idempotentHint=True
+# - openWorldHint=True (обращается к внешним системам)
+
+@mcp.tool(
+    annotations={"readOnlyHint": True, "destructiveHint": False, 
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def tool_name(param: str) -> dict:
+    """Описание инструмента для LLM. Указывать:
+    - что делает инструмент
+    - какие параметры принимает
+    - что возвращает
+    - возможные ошибки
+    """
+    log.info("mcp_tool_called", tool="tool_name", param=param)
+    try:
+        result = await _fetch_data(param)
+        return result
+    except ToolError:
+        raise  # Пробрасывать ToolError без изменений
+    except Exception as e:
+        log.error("unexpected_error", tool="tool_name", error=str(e))
+        raise ToolError(f"Внутренняя ошибка: {e}")
+
+if __name__ == "__main__":
+    mcp.run()  # stdio транспорт по умолчанию
+```
+
+## market_server — правила
+
+### MOEX ISS через apimoex
+
+```python
+# ✅ Переиспользовать requests.Session:
+import requests
+import apimoex
+
+async def _get_session() -> requests.Session:
+    """Возвращает или создаёт HTTP-сессию."""
+    # Использовать module-level сессию с TTL
+    ...
+
+# ✅ Обработка пагинации apimoex:
+# apimoex автоматически пагинирует — НЕ делать это вручную
+
+# ✅ Проверка существования тикера:
+data = apimoex.get_board_securities(session, board="TQBR", columns=("SECID",))
+valid_tickers = {row["SECID"] for row in data}
+if ticker not in valid_tickers:
+    raise ToolError(f"Тикер {ticker} не найден на TQBR. Проверьте правильность тикера.")
+```
+
+### Кэширование котировок
+
+```python
+import functools
+import time
+
+# Простой TTL-кэш в памяти (НЕ redis для прототипа):
+_cache: dict[str, tuple[float, Any]] = {}  # key -> (timestamp, value)
+
+def _cache_get(key: str, ttl: int) -> Any | None:
+    if key in _cache:
+        ts, val = _cache[key]
+        if time.time() - ts < ttl:
+            return val
+    return None
+
+def _cache_set(key: str, value: Any) -> None:
+    _cache[key] = (time.time(), value)
+
+# TTL котировок: 60 сек
+# TTL исторических данных: 300 сек
+# TTL состава досок: 3600 сек
+```
+
+### Форматы дат
+
+```python
+# Всегда принимать даты как строку "YYYY-MM-DD":
+from datetime import date, datetime
+
+def _parse_date(date_str: str) -> date:
+    """Парсинг даты из строки YYYY-MM-DD."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise ToolError(f"Неверный формат даты: {date_str}. Ожидается YYYY-MM-DD")
+```
+
+## news_server — правила
+
+### RSS-агрегация
+
+```python
+import feedparser
+import hashlib
+
+# Источники RSS с уровнями доверия:
+RSS_SOURCES = {
+    "cbr":       ("https://www.cbr.ru/rss/RssFeed/", "HIGH"),
+    "interfax":  ("https://www.interfax.ru/rss.asp", "HIGH"),
+    "tass":      ("https://tass.ru/rss/v2.xml", "HIGH"),
+    "rbc":       ("https://rbc.ru/v10/rss/v1", "MEDIUM"),
+    "cbonds":    ("https://cbonds.ru/rss/", "MEDIUM"),
+    "smartlab":  ("https://smart-lab.ru/rss.xml", "LOW"),
+}
+
+async def _fetch_rss(url: str, timeout: int = 10) -> list[dict]:
+    """Загрузка и парсинг RSS-ленты."""
+    # feedparser — синхронный, запускать через asyncio.to_thread:
+    feed = await asyncio.to_thread(feedparser.parse, url)
+    ...
+
+# Дедупликация по content_hash:
+def _news_hash(title: str, source: str) -> str:
+    return hashlib.md5(f"{title}:{source}".encode()).hexdigest()[:8]
+```
+
+### Эвристика тональности (БЕЗ LLM)
+
+```python
+# Ключевые слова для классификации тональности:
+POSITIVE_WORDS = {
+    "рост", "растёт", "повысил", "прибыль", "дивиденды", "рекорд", 
+    "превысил", "расширяет", "инвестирует", "позитивный", "улучшение"
+}
+NEGATIVE_WORDS = {
+    "падение", "снижение", "убыток", "риск", "санкции", "штраф",
+    "дефолт", "банкротство", "сокращение", "кризис", "негативный"
+}
+
+def _classify_sentiment(text: str) -> str:
+    """Простая эвристическая классификация. НЕ использовать LLM."""
+    text_lower = text.lower()
+    pos = sum(1 for w in POSITIVE_WORDS if w in text_lower)
+    neg = sum(1 for w in NEGATIVE_WORDS if w in text_lower)
+    if pos > neg:
+        return "positive"
+    elif neg > pos:
+        return "negative"
+    return "neutral"
+```
+
+### Критически важно: НЕ вызывать LLM из news_server
+
+Сервер news_server НЕ должен делать вызовы к OpenAI/Anthropic API.  
+Тональность — только эвристика. Иначе возникнет рекурсия (LLM вызывает инструмент → инструмент вызывает LLM).
+
+## analytics_server — правила
+
+### ClickHouse клиент (read-only)
+
+```python
+import clickhouse_connect
+from config.settings import get_settings
+
+def get_clickhouse_client():
+    """Создание read-only клиента ClickHouse."""
+    settings = get_settings()
+    
+    if settings.use_mock_clickhouse:
+        return MockClickHouseClient()  # Для тестов/dev
+    
+    return clickhouse_connect.get_client(
+        host=settings.clickhouse_host,
+        port=settings.clickhouse_port,
+        database=settings.clickhouse_database,
+        username=settings.clickhouse_user,
+        password=settings.clickhouse_password,
+        settings={"readonly": 1},  # Принудительный read-only
+        connect_timeout=5,
+        query_limit=1000,
+    )
+
+# ClickHouse user в профиле должен иметь: SET readonly = 1
+```
+
+### SQL-безопасность (обязательно для execute_analytics_query)
+
+```python
+import sqlglot
+from fastmcp import ToolError
+
+FORBIDDEN_STATEMENTS = {"INSERT", "UPDATE", "DELETE", "DROP", "CREATE", 
+                         "ALTER", "TRUNCATE", "RENAME", "ATTACH", "DETACH"}
+
+def _validate_query(query: str) -> str:
+    """Валидация SQL-запроса через AST. Возвращает очищенный запрос."""
+    # 1. Парсинг AST
+    try:
+        ast = sqlglot.parse_one(query, dialect="clickhouse")
+    except Exception as e:
+        raise ToolError(f"Некорректный SQL: {e}")
+    
+    # 2. Проверка типа запроса
+    if not isinstance(ast, sqlglot.exp.Select):
+        raise ToolError("Разрешены только SELECT-запросы")
+    
+    # 3. Проверка отсутствия запрещённых конструкций
+    query_upper = query.upper()
+    for stmt in FORBIDDEN_STATEMENTS:
+        if stmt in query_upper:
+            raise ToolError(f"Запрещённая конструкция: {stmt}")
+    
+    # 4. Добавление LIMIT если отсутствует
+    if "LIMIT" not in query_upper:
+        query = query.rstrip(";") + " LIMIT 1000"
+    
+    return query
+```
+
+### Расчёт риск-метрик
+
+```python
+import numpy as np
+
+def calculate_var(returns: np.ndarray, confidence: float = 0.95) -> float:
+    """Историческое VaR (Value at Risk).
+    
+    Args:
+        returns: Массив дневных доходностей (log returns)
+        confidence: Доверительный уровень (0.95 = 95%)
+    
+    Returns:
+        VaR в процентах (отрицательное число = убыток)
+    """
+    return float(np.percentile(returns, (1 - confidence) * 100))
+
+def calculate_cvar(returns: np.ndarray, confidence: float = 0.95) -> float:
+    """Conditional VaR (Expected Shortfall)."""
+    var = calculate_var(returns, confidence)
+    tail_returns = returns[returns <= var]
+    return float(np.mean(tail_returns)) if len(tail_returns) > 0 else var
+
+def calculate_beta(stock_returns: np.ndarray, index_returns: np.ndarray) -> float:
+    """Бета-коэффициент через OLS регрессию."""
+    cov = np.cov(stock_returns, index_returns)[0, 1]
+    var_index = np.var(index_returns)
+    return cov / var_index if var_index != 0 else 1.0
+
+# ВАЖНО: все расчёты на numpy, НЕ pandas для производительности
+# Конвертировать DataFrame в np.ndarray перед расчётами
+```
+
+### Mock ClickHouse для dev/тестов
+
+```python
+# servers/analytics_server/clickhouse_client.py
+import json
+from pathlib import Path
+
+class MockClickHouseClient:
+    """Мок-клиент ClickHouse для dev-окружения без реального CH."""
+    
+    def __init__(self):
+        fixtures_path = Path("data/fixtures")
+        with open(fixtures_path / "portfolio_sample.json") as f:
+            self._portfolio = json.load(f)
+        with open(fixtures_path / "moex_candles_sample.json") as f:
+            self._candles = json.load(f)
+    
+    def query(self, sql: str) -> Any:
+        """Минимальная реализация для тестовых сценариев."""
+        # Распознавать SELECT из portfolios и price_history
+        ...
+```

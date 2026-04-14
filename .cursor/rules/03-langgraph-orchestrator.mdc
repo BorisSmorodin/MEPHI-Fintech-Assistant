@@ -1,0 +1,379 @@
+---
+description: Правила реализации LangGraph-оркестратора — state, nodes, graph, MCP-клиент
+globs: ["orchestrator/**/*.py"]
+alwaysApply: false
+---
+
+# Правила LangGraph-оркестратора
+
+## Состояние графа (state.py)
+
+```python
+# orchestrator/state.py
+# НЕ изменять структуру InvestmentAssistantState без обновления всех узлов!
+
+from typing import TypedDict, Annotated, Optional, Any
+from langgraph.graph.message import add_messages
+
+class InvestmentAssistantState(TypedDict):
+    """Центральное состояние LangGraph-графа инвестиционного ассистента.
+    
+    Все поля имеют явные роли. Не добавлять произвольные поля.
+    Для новых данных — расширять существующие словари (market_data и т.д.)
+    """
+    messages:          Annotated[list, add_messages]  # append-only через редуктор
+    user_query:        str
+    query_type:        str  # Литерал: "market_monitor"|"news_analysis"|"risk_assessment"|"complex"
+    plan:              list[str]
+    current_step:      int
+    market_data:       dict[str, Any]   # Только market_executor пишет сюда
+    news_data:         list[dict]       # Только news_executor пишет сюда
+    portfolio_metrics: dict[str, Any]   # Только analytics_executor пишет сюда
+    final_answer:      Optional[str]    # Только summarizer пишет сюда
+    error_count:       int
+
+# Начальное состояние:
+def create_initial_state(user_query: str) -> InvestmentAssistantState:
+    return {
+        "messages": [],
+        "user_query": user_query,
+        "query_type": "complex",  # Переопределяется input_node
+        "plan": [],
+        "current_step": 0,
+        "market_data": {},
+        "news_data": [],
+        "portfolio_metrics": {},
+        "final_answer": None,
+        "error_count": 0,
+    }
+```
+
+### Критически важно: консистентность state
+
+- Каждый узел обновляет **только свои поля**:
+  - `input_node` → `user_query`, `query_type`, `messages`
+  - `planner_node` → `plan`, `current_step`, `messages`
+  - `market_executor` → `market_data`, `error_count`, `messages`
+  - `news_executor` → `news_data`, `error_count`, `messages`
+  - `analytics_executor` → `portfolio_metrics`, `error_count`, `messages`
+  - `summarizer_node` → `final_answer`, `messages`
+- **ЗАПРЕЩЕНО** читать/писать чужие поля из других узлов
+- При параллельном выполнении (Send API) — каждая ветка обновляет своё поле, конфликтов нет
+
+## Узлы (nodes/)
+
+### Базовый шаблон узла
+
+```python
+# orchestrator/nodes/some_node.py
+import structlog
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from ..state import InvestmentAssistantState
+
+log = structlog.get_logger()
+
+async def some_node(state: InvestmentAssistantState) -> dict:
+    """Описание назначения узла.
+    
+    Args:
+        state: Текущее состояние графа
+        
+    Returns:
+        Частичное обновление состояния (только изменённые поля)
+    """
+    log.info("node_entered", node="some_node", step=state["current_step"])
+    
+    # Логика узла...
+    
+    return {
+        "field_to_update": new_value,
+        # Возвращать ТОЛЬКО изменённые поля
+    }
+```
+
+### input_node
+
+```python
+# orchestrator/nodes/input_node.py
+import re
+
+# Известные тикеры MOEX для извлечения из запроса:
+KNOWN_TICKERS = {
+    "SBER", "LKOH", "GAZP", "YNDX", "GMKN", "ROSN", "NVTK", "TATN",
+    "MTSS", "ALRS", "PLZL", "POLY", "MGNT", "FIVE", "PHOR", "MAIL",
+    "IMOEX", "RTSI", "RGBI"  # Индексы тоже
+}
+
+QUERY_TYPE_KEYWORDS = {
+    "market_monitor": {"котировка", "цена", "курс", "объём", "торги", "акция", "стоимость", "imoex", "rtsi"},
+    "news_analysis":  {"новость", "новости", "событие", "объявление", "ставка", "цб", "влияние", "аналитика"},
+    "risk_assessment": {"риск", "портфель", "var", "просадка", "диверсификация", "стресс", "cvar", "шарп"},
+}
+
+def _classify_query_type(query: str) -> str:
+    query_lower = query.lower()
+    matches = {
+        qtype for qtype, keywords in QUERY_TYPE_KEYWORDS.items()
+        if any(kw in query_lower for kw in keywords)
+    }
+    if len(matches) >= 2:
+        return "complex"
+    elif len(matches) == 1:
+        return next(iter(matches))
+    return "complex"  # По умолчанию — комплексный
+
+def _extract_tickers(query: str) -> list[str]:
+    candidates = re.findall(r'\b[A-ZА-Я]{3,5}\b', query)
+    return [t for t in candidates if t in KNOWN_TICKERS]
+```
+
+### planner_node
+
+```python
+# orchestrator/nodes/planner_node.py
+from pydantic import BaseModel
+from typing import Literal
+from langchain_openai import ChatOpenAI
+from ..prompts import PLANNER_SYSTEM_PROMPT
+
+class PlanStep(BaseModel):
+    step_number: int
+    description: str
+    target: Literal["market_executor", "news_executor", "analytics_executor", "summarizer"]
+    tool_name: str
+    tool_args: dict
+
+class PlanSchema(BaseModel):
+    steps: list[PlanStep]
+    reasoning: str
+
+async def planner_node(state: InvestmentAssistantState) -> dict:
+    llm = ChatOpenAI(model=settings.llm_model, temperature=settings.llm_temperature)
+    structured_llm = llm.with_structured_output(PlanSchema)
+    
+    if not state["plan"]:
+        # Первый вызов — генерация плана
+        plan_result = await structured_llm.ainvoke([
+            SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+            HumanMessage(content=f"Запрос: {state['user_query']}\nТип: {state['query_type']}")
+        ])
+        return {
+            "plan": [s.description for s in plan_result.steps],
+            "current_step": 0,
+        }
+    
+    # Последующие вызовы — определение следующего шага
+    if state["current_step"] >= len(state["plan"]) - 1:
+        return {}  # Сигнал route_planner → "summarizer"
+    
+    return {"current_step": state["current_step"] + 1}
+
+def route_planner(state: InvestmentAssistantState) -> str:
+    """Условная маршрутизация из planner_node."""
+    if state["error_count"] >= 3:
+        return "summarizer"  # Graceful degradation
+    if state["final_answer"] is not None:
+        return "summarizer"
+    if not state["plan"] or state["current_step"] >= len(state["plan"]):
+        return "summarizer"
+    
+    # Определить следующий исполнитель по текущему шагу плана
+    step_desc = state["plan"][state["current_step"]].lower()
+    if "market" in step_desc or "котировк" in step_desc or "moex" in step_desc:
+        return "market_executor"
+    elif "news" in step_desc or "новост" in step_desc:
+        return "news_executor"
+    elif "analytics" in step_desc or "риск" in step_desc or "портфель" in step_desc:
+        return "analytics_executor"
+    return "summarizer"
+```
+
+### Executor nodes — шаблон отказоустойчивости
+
+```python
+# Шаблон для market_executor, news_executor, analytics_executor:
+import asyncio
+
+RETRY_DELAYS = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
+
+async def _call_with_retry(tool_fn, *args, **kwargs):
+    """Вызов MCP-инструмента с Exponential Backoff retry."""
+    last_error = None
+    for attempt, delay in enumerate(RETRY_DELAYS):
+        try:
+            return await tool_fn(*args, **kwargs)
+        except ToolError as e:
+            # ToolError — постоянная ошибка, не ретраим
+            raise
+        except Exception as e:
+            last_error = e
+            log.warning("retry_attempt", attempt=attempt+1, delay=delay, error=str(e))
+            if attempt < len(RETRY_DELAYS) - 1:
+                await asyncio.sleep(delay)
+    raise last_error
+
+async def market_executor(state: InvestmentAssistantState) -> dict:
+    """Executor: вызывает market_server через MCP."""
+    from ..mcp_client import get_mcp_tools
+    
+    try:
+        tools = await get_mcp_tools("market_server")
+        # Выполнить текущий шаг плана...
+        result = await _call_with_retry(tools["get_stock_quote"], ticker=ticker)
+        return {"market_data": {**state["market_data"], ticker: result}}
+    except ToolError as e:
+        return {
+            "error_count": state["error_count"] + 1,
+            "messages": [AIMessage(content=f"⚠️ Ошибка market_server: {e}")]
+        }
+    except Exception as e:
+        log.error("market_executor_failed", error=str(e))
+        return {
+            "error_count": state["error_count"] + 1,
+            "messages": [AIMessage(content=f"⚠️ Сервис рыночных данных недоступен")]
+        }
+```
+
+## Сборка графа (graph.py)
+
+```python
+# orchestrator/graph.py
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
+from .state import InvestmentAssistantState
+from .nodes.input_node import input_node
+from .nodes.planner_node import planner_node, route_planner
+from .nodes.market_executor import market_executor
+from .nodes.news_executor import news_executor
+from .nodes.analytics_executor import analytics_executor
+from .nodes.summarizer_node import summarizer_node
+
+def build_graph() -> CompiledGraph:
+    """Создание и компиляция LangGraph-графа."""
+    builder = StateGraph(InvestmentAssistantState)
+    
+    # Узлы
+    builder.add_node("input", input_node)
+    builder.add_node("planner", planner_node)
+    builder.add_node("market_executor", market_executor)
+    builder.add_node("news_executor", news_executor)
+    builder.add_node("analytics_executor", analytics_executor)
+    builder.add_node("summarizer", summarizer_node)
+    
+    # Фиксированные рёбра
+    builder.add_edge(START, "input")
+    builder.add_edge("input", "planner")
+    builder.add_edge("market_executor", "planner")
+    builder.add_edge("news_executor", "planner")
+    builder.add_edge("analytics_executor", "planner")
+    builder.add_edge("summarizer", END)
+    
+    # Условные рёбра
+    builder.add_conditional_edges(
+        "planner",
+        route_planner,
+        {
+            "market_executor": "market_executor",
+            "news_executor": "news_executor",
+            "analytics_executor": "analytics_executor",
+            "summarizer": "summarizer",
+        }
+    )
+    
+    # Компиляция с MemorySaver (checkpointing) и ограничением рекурсии
+    return builder.compile(
+        checkpointer=MemorySaver(),
+        # recursion_limit устанавливается при вызове .ainvoke()
+    )
+
+# Синглтон графа (создаётся один раз при запуске):
+_graph: CompiledGraph | None = None
+
+def get_graph() -> CompiledGraph:
+    global _graph
+    if _graph is None:
+        _graph = build_graph()
+    return _graph
+```
+
+## MCP-клиент (mcp_client.py)
+
+```python
+# orchestrator/mcp_client.py
+from langchain_mcp_adapters import MultiServerMCPClient
+from config.settings import get_settings
+
+_mcp_client: MultiServerMCPClient | None = None
+
+async def get_mcp_client() -> MultiServerMCPClient:
+    """Ленивая инициализация MCP-клиента."""
+    global _mcp_client
+    if _mcp_client is None:
+        settings = get_settings()
+        _mcp_client = MultiServerMCPClient({
+            "market_server": {
+                "command": "python",
+                "args": ["-m", "servers.market_server.server"],
+                "transport": "stdio",
+            },
+            "news_server": {
+                "command": "python",
+                "args": ["-m", "servers.news_server.server"],
+                "transport": "stdio",
+            },
+            "analytics_server": {
+                "command": "python",
+                "args": ["-m", "servers.analytics_server.server"],
+                "transport": "stdio",
+            },
+        })
+        await _mcp_client.__aenter__()
+    return _mcp_client
+
+async def get_mcp_tools(server_name: str) -> dict:
+    """Получить инструменты конкретного MCP-сервера как словарь."""
+    client = await get_mcp_client()
+    tools = client.get_tools()
+    return {t.name: t for t in tools if t.name.startswith(server_name + ".")}
+```
+
+## Промпты (prompts.py)
+
+```python
+# orchestrator/prompts.py
+# Системные промпты — ВЫНОСИТЬ СЮДА, не в бизнес-логику
+
+PLANNER_SYSTEM_PROMPT = """Ты — планировщик-супервизор инвестиционного ассистента.
+Анализируй запрос пользователя и формируй пошаговый план вызовов инструментов.
+
+Доступные серверы:
+- market_executor: данные Московской биржи (котировки, свечи, индексы, облигации)
+- news_executor: финансовые новости (РБК, ТАСС, Интерфакс, ЦБ РФ, Smart-Lab)
+- analytics_executor: аналитика портфеля (VaR, CVaR, стресс-тесты, сводка)
+
+Правила:
+1. Минимально необходимое количество шагов
+2. Каждый шаг — один вызов одного инструмента
+3. analytics_executor обычно нужен ПОСЛЕ market_executor (для актуальных цен)
+4. Заканчивай план шагом с target="summarizer"
+"""
+
+SUMMARIZER_SYSTEM_PROMPT = """Ты — финансовый аналитик инвестиционного ассистента.
+Синтезируй данные из разных источников в чёткий, структурированный ответ инвестору.
+
+Правила форматирования ответа:
+1. Начинай с краткого резюме (1-2 предложения)
+2. Конкретные числа: цены, проценты, рублёвые суммы
+3. Источники данных и временные метки
+4. Новости HIGH-приоритета (ТАСС, Интерфакс, ЦБ РФ) весомее LOW (Smart-Lab)
+5. Если данных не хватает — явно указать что недоступно
+6. Не давать инвестиционных рекомендаций ("купить/продать") — только факты и риски
+"""
+```
+
+## Критические ограничения
+
+- **recursion_limit = 10** передавать в `.ainvoke(config={"recursion_limit": 10})`
+- **Никогда** не вызывать LLM из executor-узлов напрямую — только через MCP
+- **Никогда** не мутировать объект `state` — только возвращать dict с обновлениями
+- MCP-клиент создавать **один раз** при старте, переиспользовать

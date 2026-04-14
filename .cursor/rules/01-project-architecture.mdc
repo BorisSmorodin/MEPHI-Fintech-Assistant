@@ -1,0 +1,161 @@
+---
+description: Общая архитектура, структура проекта, стиль кода и соглашения для investment_assistant
+globs: ["**/*.py", "pyproject.toml", "*.md"]
+alwaysApply: true
+---
+
+# Правила архитектуры проекта: Investment Assistant
+
+## Обязательная структура проекта
+
+Всегда соблюдать следующую структуру. НЕ создавать файлы за пределами неё:
+
+```
+investment_assistant/
+├── config/settings.py          # ЕДИНСТВЕННЫЙ источник конфигурации
+├── servers/
+│   ├── market_server/server.py
+│   ├── news_server/server.py
+│   └── analytics_server/server.py
+├── orchestrator/
+│   ├── state.py                # InvestmentAssistantState
+│   ├── graph.py                # Сборка StateGraph
+│   ├── nodes/                  # Один файл = один узел
+│   ├── mcp_client.py
+│   └── prompts.py
+├── ui/
+│   ├── cli.py
+│   └── streamlit_app.py
+├── data/
+│   ├── migrations/001_initial.sql
+│   └── fixtures/
+├── tests/
+└── pyproject.toml
+```
+
+## Технологический стек — строго соблюдать
+
+- **Python ≥ 3.11** — использовать новый синтаксис типизации (`X | Y` вместо `Union[X, Y]`, `list[str]` вместо `List[str]`)
+- **uv** для управления зависимостями (НЕ pip install напрямую)
+- **FastMCP ≥ 2.0** для MCP-серверов (НЕ mcp напрямую если FastMCP доступен)
+- **LangGraph ≥ 0.2** для оркестратора
+- **pydantic-settings** для конфигурации (НЕ os.environ напрямую)
+- **structlog** для логирования (НЕ print, НЕ logging.basicConfig)
+- **pytest + pytest-asyncio** для тестов
+
+## Стиль кода
+
+### Форматирование
+- Отступ: 4 пробела
+- Максимальная длина строки: 100 символов
+- Кавычки: двойные (`"`) для строк, одинарные для f-строк если удобнее
+- Импорты: стандартная библиотека → сторонние → локальные (разделены пустой строкой)
+
+### Именование
+- Файлы и модули: `snake_case`
+- Классы: `PascalCase`
+- Функции и переменные: `snake_case`
+- Константы: `UPPER_SNAKE_CASE`
+- Приватные методы: `_single_leading_underscore`
+- TypedDict-классы состояний: `PascalCaseState` (например, `InvestmentAssistantState`)
+
+### Типизация
+- **Обязательна** для всех публичных функций и методов
+- `TypedDict` для структур состояния LangGraph
+- `BaseModel` (Pydantic) для схем вывода LLM
+- `Protocol` для интерфейсов внешних зависимостей (в тестах — моки)
+- Избегать `Any` там, где тип можно установить точно
+
+### Документация
+- Docstring для каждой публичной функции/класса (Google-стиль)
+- Инструменты MCP ОБЯЗАТЕЛЬНО имеют docstring — это их описание для LLM
+- Комментарии на русском языке (проект академический)
+
+## Конфигурация
+
+**Все настройки** через `config/settings.py` (Pydantic BaseSettings). ЗАПРЕЩЕНО:
+- `os.environ["KEY"]` в коде вне settings.py
+- Хардкодить URL, порты, ключи, имена моделей в бизнес-логике
+- Использовать разные файлы конфигурации для разных модулей
+
+```python
+# ✅ Правильно
+from config.settings import get_settings
+settings = get_settings()
+model = settings.llm_model
+
+# ❌ Запрещено
+model = "gpt-4o-mini"  # хардкод
+api_key = os.environ["OPENAI_API_KEY"]  # не через settings
+```
+
+## Логирование
+
+Использовать **только structlog**:
+
+```python
+import structlog
+log = structlog.get_logger()
+
+# В начале каждого MCP-инструмента:
+log.info("mcp_tool_called", tool="get_stock_quote", ticker=ticker)
+
+# При ошибках:
+log.error("external_api_error", tool="get_stock_quote", error=str(e), ticker=ticker)
+
+# ❌ Запрещено:
+print(f"Calling get_stock_quote for {ticker}")
+logging.info("calling tool")
+```
+
+## Обработка ошибок
+
+```python
+# В MCP-серверах — ToolError для ожидаемых ошибок:
+from fastmcp import ToolError
+
+if not row:
+    raise ToolError(f"Тикер {ticker} не найден на доске TQBR")
+
+# В узлах оркестратора — обновлять state.error_count:
+except Exception as e:
+    log.error("executor_error", node="market_executor", error=str(e))
+    return {
+        "error_count": state["error_count"] + 1,
+        "messages": [AIMessage(content=f"Ошибка при получении данных: {e}")]
+    }
+```
+
+## Асинхронность
+
+- Все MCP-инструменты — `async def`
+- Все узлы LangGraph — `async def`
+- Использовать `asyncio.gather()` для параллельных вызовов внутри одного узла
+- Не смешивать sync и async в одном модуле без необходимости
+
+## Dependency injection (для тестируемости)
+
+```python
+# ✅ Правильно — зависимости через параметры
+async def get_stock_quote(
+    ticker: str,
+    *,
+    session: requests.Session = None  # или Protocol
+) -> dict:
+    session = session or requests.Session()
+    ...
+
+# ❌ Сложнее тестировать:
+async def get_stock_quote(ticker: str) -> dict:
+    session = requests.Session()  # создаётся внутри, нельзя замокать
+    ...
+```
+
+## Запрещённые паттерны
+
+- `import *` — всегда явные импорты
+- `global` переменные для мутабельного состояния
+- Вложенные функции глубже 2 уровней
+- `time.sleep()` в асинхронном коде (использовать `asyncio.sleep()`)
+- Конкатенация строк SQL через f-string (SQL-инъекция)
+- Игнорирование `except Exception as e: pass`

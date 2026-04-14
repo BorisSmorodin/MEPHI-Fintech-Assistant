@@ -1,0 +1,364 @@
+---
+description: Правила тестирования, безопасности, метрик и CI для investment_assistant
+globs: ["tests/**/*.py", "servers/**/tests/**/*.py", "**/*security*", "**/*test*"]
+alwaysApply: false
+---
+
+# Правила тестирования и безопасности
+
+## Структура тестов
+
+```
+tests/
+├── conftest.py              # Общие фикстуры (pytest)
+├── test_orchestrator.py     # Юнит-тесты узлов графа
+└── test_e2e.py              # E2E тесты 5 сценариев
+
+servers/
+├── market_server/tests/test_market.py
+├── news_server/tests/test_news.py
+└── analytics_server/tests/test_analytics.py
+```
+
+## pytest конфигурация (pyproject.toml)
+
+```toml
+[tool.pytest.ini_options]
+asyncio_mode = "auto"        # pytest-asyncio авторежим
+testpaths = ["tests", "servers"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["servers", "orchestrator"]
+omit = ["*/tests/*", "*/migrations/*"]
+```
+
+## conftest.py — общие фикстуры
+
+```python
+# tests/conftest.py
+import pytest
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+@pytest.fixture
+def portfolio_fixture():
+    """Тестовый портфель из файла fixtures."""
+    with open("data/fixtures/portfolio_sample.json") as f:
+        return json.load(f)
+
+@pytest.fixture
+def candles_fixture():
+    """Исторические свечи из файла fixtures."""
+    with open("data/fixtures/moex_candles_sample.json") as f:
+        return json.load(f)
+
+@pytest.fixture
+def mock_apimoex(monkeypatch):
+    """Мок для apimoex — не делает реальных HTTP запросов."""
+    mock = MagicMock()
+    mock.get_board_securities.return_value = [
+        {"SECID": "SBER", "LAST": 280.50, "CHANGE": 1.5, "VOLTODAY": 15000000},
+        {"SECID": "LKOH", "LAST": 6800.0, "CHANGE": -0.3, "VOLTODAY": 800000},
+        {"SECID": "GAZP", "LAST": 155.20, "CHANGE": 0.8, "VOLTODAY": 25000000},
+    ]
+    mock.get_market_candles.return_value = [
+        {"begin": "2025-01-02", "open": 278.0, "high": 282.0, 
+         "low": 276.0, "close": 280.5, "volume": 14500000},
+        # ... минимум 252 строки для корректного расчёта VaR
+    ]
+    monkeypatch.setattr("servers.market_server.moex_client.apimoex", mock)
+    return mock
+
+@pytest.fixture
+def mock_feedparser(monkeypatch):
+    """Мок для feedparser RSS."""
+    def mock_parse(url):
+        return MagicMock(
+            entries=[
+                MagicMock(
+                    title="Сбербанк отчитался о росте прибыли на 15%",
+                    link="https://rbc.ru/news/123",
+                    published="2026-04-12T10:00:00",
+                    summary="Прибыль Сбербанка за Q1 2026 выросла на 15%..."
+                ),
+                MagicMock(
+                    title="ЦБ РФ сохранил ключевую ставку на уровне 16%",
+                    link="https://cbr.ru/press_service/event/1234",
+                    published="2026-04-12T12:00:00",
+                    summary="Совет директоров Банка России принял решение..."
+                ),
+            ]
+        )
+    monkeypatch.setattr("servers.news_server.rss_fetcher.feedparser.parse", mock_parse)
+
+@pytest.fixture
+def mock_clickhouse(monkeypatch):
+    """Мок ClickHouse — использует JSON-фикстуры."""
+    monkeypatch.setenv("USE_MOCK_CLICKHOUSE", "true")
+```
+
+## Юнит-тесты market_server
+
+```python
+# servers/market_server/tests/test_market.py
+import pytest
+from fastmcp import ToolError
+
+class TestGetStockQuote:
+    @pytest.mark.asyncio
+    async def test_valid_ticker_returns_quote(self, mock_apimoex):
+        from servers.market_server.server import get_stock_quote
+        result = await get_stock_quote("SBER")
+        assert result["SECID"] == "SBER"
+        assert "LAST" in result
+        assert isinstance(result["LAST"], float)
+    
+    @pytest.mark.asyncio
+    async def test_invalid_ticker_raises_tool_error(self, mock_apimoex):
+        from servers.market_server.server import get_stock_quote
+        with pytest.raises(ToolError, match="не найден"):
+            await get_stock_quote("INVALID")
+    
+    @pytest.mark.asyncio
+    async def test_caching_returns_same_result(self, mock_apimoex):
+        from servers.market_server.server import get_stock_quote
+        result1 = await get_stock_quote("SBER")
+        result2 = await get_stock_quote("SBER")
+        assert result1 == result2
+        # apimoex вызывается только один раз благодаря кэшу:
+        # (зависит от реализации кэша)
+
+class TestGetCandles:
+    @pytest.mark.asyncio
+    async def test_returns_ohlcv_list(self, mock_apimoex):
+        from servers.market_server.server import get_candles
+        result = await get_candles("SBER", "2025-01-01", "2025-12-31", interval=24)
+        assert isinstance(result, list)
+        assert len(result) > 0
+        assert all(k in result[0] for k in ["begin", "open", "high", "low", "close", "volume"])
+    
+    @pytest.mark.asyncio
+    async def test_invalid_date_format_raises_error(self):
+        from servers.market_server.server import get_candles
+        with pytest.raises(ToolError, match="Неверный формат"):
+            await get_candles("SBER", "01-01-2025", "31-12-2025")
+```
+
+## Юнит-тесты analytics_server
+
+```python
+# servers/analytics_server/tests/test_analytics.py
+import pytest
+import numpy as np
+from servers.analytics_server.risk_calculator import (
+    calculate_var, calculate_cvar, calculate_beta
+)
+from servers.analytics_server.server import _validate_query
+from fastmcp import ToolError
+
+class TestVaRCalculation:
+    def test_var_on_known_distribution(self):
+        """VaR на нормальном распределении с известными параметрами."""
+        np.random.seed(42)
+        returns = np.random.normal(-0.001, 0.015, 252)  # μ=-0.1%, σ=1.5%
+        var = calculate_var(returns, confidence=0.95)
+        # 5-й перцентиль ≈ μ - 1.645σ ≈ -0.001 - 1.645*0.015 ≈ -0.025
+        assert -0.04 < var < -0.015, f"VaR={var} вне ожидаемого диапазона"
+    
+    def test_cvar_worse_than_var(self):
+        """CVaR должен быть хуже VaR."""
+        np.random.seed(42)
+        returns = np.random.normal(0, 0.02, 500)
+        var = calculate_var(returns)
+        cvar = calculate_cvar(returns)
+        assert cvar <= var, "CVaR должен быть ≤ VaR"
+    
+    def test_var_with_perfect_data(self):
+        """VaR = точное значение на детерминированных данных."""
+        returns = np.array([-0.01, -0.02, -0.03, -0.04, -0.05, 0.01, 0.02, 0.03] * 5)
+        var = calculate_var(returns, confidence=0.95)
+        assert var < 0
+
+class TestSQLValidation:
+    def test_select_query_passes(self):
+        query = "SELECT ticker, close FROM price_history WHERE ticker = 'SBER'"
+        result = _validate_query(query)
+        assert "SBER" in result
+    
+    def test_insert_raises_error(self):
+        with pytest.raises(ToolError, match="SELECT"):
+            _validate_query("INSERT INTO portfolios VALUES ('x', 'SBER', 10, 280)")
+    
+    def test_drop_raises_error(self):
+        with pytest.raises(ToolError):
+            _validate_query("DROP TABLE portfolios")
+    
+    def test_limit_auto_added(self):
+        query = "SELECT * FROM price_history WHERE ticker = 'SBER'"
+        result = _validate_query(query)
+        assert "LIMIT" in result.upper()
+    
+    def test_existing_limit_preserved(self):
+        query = "SELECT * FROM price_history LIMIT 50"
+        result = _validate_query(query)
+        assert "LIMIT 50" in result
+
+class TestSentimentHeuristic:
+    def test_positive_news(self):
+        from servers.news_server.sentiment import _classify_sentiment
+        assert _classify_sentiment("Сбербанк отчитался о рекордном росте прибыли") == "positive"
+    
+    def test_negative_news(self):
+        from servers.news_server.sentiment import _classify_sentiment
+        assert _classify_sentiment("Акции упали на фоне санкций и убытков") == "negative"
+    
+    def test_neutral_news(self):
+        from servers.news_server.sentiment import _classify_sentiment
+        assert _classify_sentiment("Заседание совета директоров состоится во вторник") == "neutral"
+```
+
+## Юнит-тесты оркестратора
+
+```python
+# tests/test_orchestrator.py
+import pytest
+from orchestrator.nodes.input_node import _classify_query_type, _extract_tickers
+
+class TestQueryClassification:
+    def test_market_monitor_classification(self):
+        assert _classify_query_type("Покажи котировку SBER") == "market_monitor"
+    
+    def test_news_analysis_classification(self):
+        assert _classify_query_type("Последние новости по Газпрому") == "news_analysis"
+    
+    def test_risk_assessment_classification(self):
+        assert _classify_query_type("Оцени риск моего портфеля VaR") == "risk_assessment"
+    
+    def test_complex_classification(self):
+        q = "Оцени риск портфеля с учётом последних новостей"
+        assert _classify_query_type(q) == "complex"
+    
+    def test_unknown_defaults_to_complex(self):
+        assert _classify_query_type("Привет") == "complex"
+
+class TestTickerExtraction:
+    def test_extracts_known_ticker(self):
+        tickers = _extract_tickers("Покажи цену акции SBER и LKOH")
+        assert "SBER" in tickers
+        assert "LKOH" in tickers
+    
+    def test_ignores_unknown(self):
+        tickers = _extract_tickers("Цена акции UNKNOWN123")
+        assert "UNKNOWN123" not in tickers
+```
+
+## E2E тесты (5 сценариев)
+
+```python
+# tests/test_e2e.py
+import pytest
+import time
+from orchestrator.graph import get_graph
+from orchestrator.state import create_initial_state
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query,expected_data_keys,expected_servers", [
+    (
+        "Покажи котировку SBER",
+        ["market_data"],
+        ["market_server"]
+    ),
+    (
+        "Последние новости по Газпрому",
+        ["news_data"],
+        ["news_server"]
+    ),
+    (
+        "Оцени риск портфеля demo_portfolio",
+        ["portfolio_metrics"],
+        ["analytics_server"]
+    ),
+    (
+        "Проведи стресс-тест IMOEX -20% для портфеля demo_portfolio",
+        ["portfolio_metrics"],
+        ["analytics_server"]
+    ),
+    (
+        "Оцени портфель demo_portfolio с учётом новостей нефтегазового сектора",
+        ["market_data", "news_data", "portfolio_metrics"],
+        ["market_server", "news_server", "analytics_server"]
+    ),
+])
+async def test_e2e_scenario(query, expected_data_keys, expected_servers,
+                             mock_apimoex, mock_feedparser, mock_clickhouse):
+    """E2E тест: система завершает обработку без исключений."""
+    graph = get_graph()
+    initial_state = create_initial_state(query)
+    
+    start_time = time.time()
+    result = await graph.ainvoke(
+        initial_state,
+        config={"recursion_limit": 10, "configurable": {"thread_id": "test"}}
+    )
+    elapsed = time.time() - start_time
+    
+    # Базовые проверки:
+    assert result["final_answer"] is not None, "Ответ не должен быть None"
+    assert len(result["final_answer"]) > 10, "Ответ слишком короткий"
+    assert result["error_count"] < 3, f"Слишком много ошибок: {result['error_count']}"
+    
+    # Проверка заполнения нужных полей:
+    for key in expected_data_keys:
+        assert result[key], f"Поле {key} не заполнено"
+    
+    # Логирование метрик для главы 4:
+    print(f"\n[METRIC] query={query!r}")
+    print(f"[METRIC] success=True")
+    print(f"[METRIC] response_time={elapsed:.2f}s")
+    print(f"[METRIC] error_count={result['error_count']}")
+```
+
+## Безопасность — чек-лист
+
+Перед каждым PR/commit проверить:
+
+- [ ] `.env` в `.gitignore`
+- [ ] Нет хардкоданных ключей, паролей, токенов в коде
+- [ ] `execute_analytics_query` использует `_validate_query` перед исполнением
+- [ ] ClickHouse-клиент подключается только с `readonly=1`
+- [ ] Пользовательский ввод не встраивается в SQL через f-string
+- [ ] Длина пользовательского запроса ограничена (≤ 2000 символов в `input_node`)
+- [ ] Новостные данные экранированы перед передачей в LLM (в `prompts.py`)
+- [ ] Нет `except Exception: pass` (все ошибки логируются)
+- [ ] `ToolError` не раскрывает внутренние детали реализации пользователю
+
+## Метрики для Главы 4 диплома
+
+При тестировании обязательно собирать и сохранять:
+
+```python
+# В conftest.py или отдельном модуле:
+test_metrics = []
+
+def record_metric(scenario: str, success: bool, correct_tools: bool,
+                  response_time: float, mcp_calls: int, error_count: int):
+    test_metrics.append({
+        "scenario": scenario,
+        "scenario_success_rate": success,
+        "tool_selection_correct": correct_tools,
+        "response_time_sec": response_time,
+        "mcp_calls_count": mcp_calls,
+        "mttr_applicable": error_count > 0,
+        "final_error_count": error_count,
+    })
+
+# После тестов — экспорт в CSV для анализа в Главе 4:
+import csv
+def export_metrics(filename: str = "test_results.csv"):
+    with open(filename, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=test_metrics[0].keys())
+        writer.writeheader()
+        writer.writerows(test_metrics)
+```
