@@ -97,18 +97,43 @@
 
 ## Этап 1. Данные и инфраструктура хранилища
 
-Статус: **частично подготовлен (только каркас)**.
+Статус: **выполнен**.
 
 Выполнено:
 
-- Создан файл миграции `data/migrations/001_initial.sql`.
-- Подготовлена директория `data/fixtures` (пока без содержательных фикстур).
+- Финализирована миграция `data/migrations/001_initial.sql`:
+  - добавлены доменные комментарии к полям;
+  - подтверждена idempotent-логика `CREATE TABLE IF NOT EXISTS`;
+  - проверены `ORDER BY` и `PARTITION BY` в соответствии с ТЗ.
+- Подготовлены fixture-данные:
+  - `data/fixtures/portfolio_sample.json` с 10 позициями (6 акций + 4 облигации);
+  - `data/fixtures/moex_candles_sample.json` с параметрами генерации
+    дневных свечей за ~2 года (520 торговых дней) для всех тикеров портфеля.
+- Реализован слой доступа к данным в `servers/analytics_server/clickhouse_client.py`:
+  - `ClickHouseClient` для real режима через `clickhouse-connect`;
+  - `MockClickHouseClient` для dev-режима на fixture-данных;
+  - фабрика `get_analytics_data_client(settings)`;
+  - read-only режим и таймауты запросов;
+  - логирование операций через `structlog`.
+- Добавлены инфраструктурные тесты Этапа 1
+  в `servers/analytics_server/tests/test_analytics.py`:
+  - проверка структуры DDL и синтаксиса SQL;
+  - проверка валидности `portfolio_sample.json`;
+  - проверка согласованности тикеров между fixtures;
+  - проверка выбора real/mock клиента фабрикой;
+  - проверка генерации истории и базового SELECT в mock-режиме.
+- Добавлены общие pytest-фикстуры:
+  - `conftest.py` в корне проекта;
+  - `tests/conftest.py` для совместимости существующей структуры.
 
 Не выполнено:
 
-- Наполнение фикстур `portfolio_sample.json`, `moex_candles_sample.json`.
-- Реализация `clickhouse_client.py`.
-- Реализация mock-режима чтения данных из фикстур.
+- Полноценная интеграция с реальным ClickHouse на runtime (перейдет в Этап 2+).
+- Реализация бизнес-логики риск-аналитики поверх data-layer (Этап 2).
+
+Проверки:
+
+- Локальный прогон `pytest` для Этапа 1: `8 passed`.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Общие фикстуры тестового набора."""
+"""Общие pytest-фикстуры проекта."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture
 def project_root() -> Path:
     """Возвращает корневую директорию проекта."""
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parent
 
 
 @pytest.fixture

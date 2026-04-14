@@ -1,0 +1,79 @@
+{
+  "metadata": {
+    "description": "Параметры генерации дневных свечей за ~2 года для mock-режима.",
+    "start_date": "2024-01-02",
+    "trading_days": 520
+  },
+  "tickers": [
+    {
+      "ticker": "SBER",
+      "base_price": 275.0,
+      "daily_drift": 0.0003,
+      "daily_volatility": 0.015,
+      "base_volume": 12000000.0
+    },
+    {
+      "ticker": "LKOH",
+      "base_price": 7000.0,
+      "daily_drift": 0.00025,
+      "daily_volatility": 0.012,
+      "base_volume": 900000.0
+    },
+    {
+      "ticker": "GAZP",
+      "base_price": 170.0,
+      "daily_drift": 0.0002,
+      "daily_volatility": 0.014,
+      "base_volume": 18000000.0
+    },
+    {
+      "ticker": "YNDX",
+      "base_price": 3900.0,
+      "daily_drift": 0.00045,
+      "daily_volatility": 0.02,
+      "base_volume": 1400000.0
+    },
+    {
+      "ticker": "GMKN",
+      "base_price": 16000.0,
+      "daily_drift": 0.0002,
+      "daily_volatility": 0.018,
+      "base_volume": 320000.0
+    },
+    {
+      "ticker": "ROSN",
+      "base_price": 535.0,
+      "daily_drift": 0.00025,
+      "daily_volatility": 0.013,
+      "base_volume": 4200000.0
+    },
+    {
+      "ticker": "OFZ26243",
+      "base_price": 1010.0,
+      "daily_drift": 0.00004,
+      "daily_volatility": 0.0025,
+      "base_volume": 250000.0
+    },
+    {
+      "ticker": "OFZ29024",
+      "base_price": 996.0,
+      "daily_drift": 0.00003,
+      "daily_volatility": 0.0022,
+      "base_volume": 230000.0
+    },
+    {
+      "ticker": "RU000A105ZX4",
+      "base_price": 988.0,
+      "daily_drift": 0.00005,
+      "daily_volatility": 0.0032,
+      "base_volume": 170000.0
+    },
+    {
+      "ticker": "RU000A1061Q0",
+      "base_price": 1009.0,
+      "daily_drift": 0.00005,
+      "daily_volatility": 0.003,
+      "base_volume": 160000.0
+    }
+  ]
+}

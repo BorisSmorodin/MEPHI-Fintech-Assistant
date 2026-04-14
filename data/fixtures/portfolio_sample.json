@@ -1,0 +1,92 @@
+[
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "SBER",
+    "quantity": 120.0,
+    "avg_price": 272.4,
+    "sector": "финансы",
+    "instrument_type": "акция",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "LKOH",
+    "quantity": 24.0,
+    "avg_price": 7150.0,
+    "sector": "нефтегаз",
+    "instrument_type": "акция",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "GAZP",
+    "quantity": 180.0,
+    "avg_price": 169.2,
+    "sector": "нефтегаз",
+    "instrument_type": "акция",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "YNDX",
+    "quantity": 30.0,
+    "avg_price": 3950.0,
+    "sector": "IT",
+    "instrument_type": "акция",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "GMKN",
+    "quantity": 16.0,
+    "avg_price": 16250.0,
+    "sector": "металлургия",
+    "instrument_type": "акция",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "ROSN",
+    "quantity": 64.0,
+    "avg_price": 540.0,
+    "sector": "нефтегаз",
+    "instrument_type": "акция",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "OFZ26243",
+    "quantity": 50.0,
+    "avg_price": 1012.0,
+    "sector": "другое",
+    "instrument_type": "облигация",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "OFZ29024",
+    "quantity": 60.0,
+    "avg_price": 995.5,
+    "sector": "другое",
+    "instrument_type": "облигация",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "RU000A105ZX4",
+    "quantity": 45.0,
+    "avg_price": 987.3,
+    "sector": "финансы",
+    "instrument_type": "облигация",
+    "currency": "RUB"
+  },
+  {
+    "portfolio_id": "demo_portfolio",
+    "ticker": "RU000A1061Q0",
+    "quantity": 40.0,
+    "avg_price": 1008.1,
+    "sector": "ритейл",
+    "instrument_type": "облигация",
+    "currency": "RUB"
+  }
+]

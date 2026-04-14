@@ -4,9 +4,9 @@ CREATE TABLE IF NOT EXISTS portfolios (
     ticker String,
     quantity Float64,
     avg_price Float64,
-    sector String,
-    instrument_type String,
-    currency String,
+    sector String,          -- нефтегаз|финансы|металлургия|IT|ритейл|другое
+    instrument_type String, -- акция|облигация
+    currency String,        -- RUB|USD|EUR
     updated_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY (portfolio_id, ticker);
@@ -25,9 +25,9 @@ PARTITION BY toYYYYMM(date);
 
 CREATE TABLE IF NOT EXISTS bond_details (
     ticker String,
-    duration Float64,
-    coupon_rate Float64,
-    ytm Float64,
+    duration Float64,  -- дюрация в годах
+    coupon_rate Float64, -- % годовых
+    ytm Float64,  -- доходность к погашению
     maturity_date Date
 ) ENGINE = MergeTree()
 ORDER BY ticker;
