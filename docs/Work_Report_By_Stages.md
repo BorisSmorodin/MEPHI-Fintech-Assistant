@@ -191,20 +191,39 @@
 
 ## Этап 3. Реализация market_server
 
-Статус: **не начат (созданы только файлы-заглушки)**.
+Статус: **выполнен**.
 
 Выполнено:
 
-- Подготовлены файлы:
-  - `servers/market_server/server.py`
-  - `servers/market_server/moex_client.py`
-  - `servers/market_server/tests/test_market.py`
+- Реализован `servers/market_server/moex_client.py`:
+  - клиент `MoexClient` с переиспользуемой `requests.Session`;
+  - валидации `ticker/board/index/date/interval/range`;
+  - единые исключения `MarketDataError` и `TickerNotFoundError`;
+  - in-memory TTL-кэш (`60s` для котировок, `300s` для исторических данных);
+  - логирование `cache_hit/cache_miss` для диагностики;
+  - нормализация ответа к контрактам ТЗ по всем инструментам.
+- Реализован `servers/market_server/server.py` (FastMCP):
+  - инструменты `get_stock_quote`, `get_candles`, `get_board_securities`,
+    `get_index_analytics`, `get_bond_data`;
+  - для инструментов добавлены docstring и MCP-аннотации
+    `readOnlyHint/idempotentHint`;
+  - добавлено логирование вызовов через `structlog`;
+  - ожидаемые ошибки преобразуются в `ToolError`.
+- Реализованы тесты `servers/market_server/tests/test_market.py`:
+  - позитивные и негативные сценарии инструментов;
+  - проверки валидаций дат/интервалов/board/index;
+  - проверка контракта ответов;
+  - тесты кэша `miss/hit/expiration`;
+  - smoke-проверка MCP-инструментов в mock-режиме.
 
 Не выполнено:
 
-- Интеграция с MOEX ISS через `apimoex`.
-- Инструменты сервера и кэширование.
-- Тесты функциональности и валидаций.
+- Интеграционные проверки с реальными данными MOEX под нестабильной сетью
+  и вариативными ответами ISS (выделено в дальнейшие этапы hardening).
+
+Проверки:
+
+- Локальный прогон `pytest`: `24 passed`.
 
 ---
 
