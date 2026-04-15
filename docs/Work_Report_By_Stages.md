@@ -139,22 +139,53 @@
 
 ## Этап 2. Реализация analytics_server
 
-Статус: **не начат (созданы только файлы-заглушки)**.
+Статус: **выполнен**.
 
 Выполнено:
 
-- Подготовлены файлы:
-  - `servers/analytics_server/server.py`
-  - `servers/analytics_server/clickhouse_client.py`
-  - `servers/analytics_server/risk_calculator.py`
-  - `servers/analytics_server/stress_tester.py`
-  - `servers/analytics_server/tests/test_analytics.py`
+- Реализован `servers/analytics_server/risk_calculator.py`:
+  - подготовка выровненных ценовых рядов и матрицы доходностей;
+  - исторический VaR, параметрический VaR, CVaR;
+  - аннуализированная волатильность;
+  - Sharpe ratio с annual risk-free;
+  - Max Drawdown;
+  - HHI по позициям и секторам;
+  - интерпретационные поля для ключевых метрик.
+- Реализован `servers/analytics_server/stress_tester.py`:
+  - сценарий `index_drop` (beta-оценка через OLS к рыночному прокси);
+  - сценарий `rate_hike` (дюрация облигаций + чувствительные сектора акций);
+  - сценарий `sector_decline` с выбором/передачей целевого сектора;
+  - унифицированный формат ответа стресс-теста и сравнение с VaR(95%).
+- Реализован `servers/analytics_server/server.py` (FastMCP):
+  - инструменты `get_portfolio_summary`, `calculate_risk_metrics`,
+    `run_stress_test`, `execute_analytics_query`;
+  - docstring-описания инструментов для LLM;
+  - логирование вызовов/ошибок через `structlog`;
+  - перевод ошибок в `ToolError`.
+- Реализована SQL-безопасность `execute_analytics_query`:
+  - AST-парсинг через `sqlglot.parse_one`;
+  - разрешены только `SELECT`;
+  - запрет DML/DDL ключевых слов;
+  - автодобавление `LIMIT 1000` при отсутствии лимита;
+  - выполнение только через read-only data-client.
+- Доработан `servers/analytics_server/clickhouse_client.py`:
+  - добавлен метод `get_bond_details`;
+  - расширен mock-режим данными `bond_details` для стресс-тестов.
+- Существенно расширены тесты в `servers/analytics_server/tests/test_analytics.py`:
+  - контракты `get_portfolio_summary`;
+  - корректность блока риск-метрик;
+  - сценарии стресс-тестов;
+  - SQL-валидация и автолимит;
+  - smoke асинхронных MCP-инструментов в mock-режиме.
 
 Не выполнено:
 
-- Бизнес-логика инструментов и вычислений.
-- SQL-защита `execute_analytics_query`.
-- Юнит- и интеграционные тесты по функционалу.
+- Интеграция с реальным production-контуром ClickHouse и калибровка формул
+  под боевые исторические данные.
+
+Проверки:
+
+- Локальный прогон `pytest`: `15 passed`.
 
 ---
 

@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 import sqlglot
 
 from config.settings import Settings
@@ -13,6 +14,17 @@ from servers.analytics_server.clickhouse_client import (
     ClickHouseClient,
     MockClickHouseClient,
     get_analytics_data_client,
+)
+from servers.analytics_server.server import (
+    _build_portfolio_summary,
+    _calculate_risk_metrics,
+    _execute_analytics_query,
+    _run_stress_test,
+    _validate_and_rewrite_select_query,
+    calculate_risk_metrics,
+    execute_analytics_query,
+    get_portfolio_summary,
+    run_stress_test,
 )
 
 
@@ -156,4 +168,85 @@ def test_mock_execute_select_supports_read_only_subset(fixtures_dir: Path) -> No
     result = client.execute_select("SELECT * FROM portfolios LIMIT 5")
     assert result["row_count"] == 5
     assert result["columns"][0] == "portfolio_id"
+
+
+def test_get_portfolio_summary_contract(fixtures_dir: Path) -> None:
+    """Проверяет формат ответа get_portfolio_summary."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+    result = _build_portfolio_summary("demo_portfolio", client)
+    assert result["portfolio_id"] == "demo_portfolio"
+    assert result["total_value"] > 0
+    assert len(result["positions"]) == 10
+    assert {"by_sector", "by_type", "by_currency"} <= set(result["allocation"].keys())
+
+
+def test_calculate_risk_metrics_contains_required_indicators(fixtures_dir: Path) -> None:
+    """Проверяет наличие и диапазоны ключевых риск-метрик."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+    result = _calculate_risk_metrics("demo_portfolio", confidence=0.95, client=client)
+    assert result["var_historical"]["value_rub"] >= 0
+    assert result["var_parametric"]["value_rub"] >= 0
+    assert result["cvar"]["value_rub"] >= 0
+    assert result["volatility"]["value_annual"] > 0
+    assert 0 <= result["hhi"]["positions"]["value"] <= 1
+    assert 0 <= result["hhi"]["sectors"]["value"] <= 1
+    assert result["max_drawdown"]["value"] >= 0
+
+
+def test_run_stress_test_scenarios(fixtures_dir: Path) -> None:
+    """Проверяет выполнение всех стресс-сценариев."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+
+    result_index = _run_stress_test("demo_portfolio", "index_drop", 20.0, None, client)
+    assert result_index["scenario"] == "index_drop"
+    assert result_index["total_loss_rub"] > 0
+
+    result_rate = _run_stress_test("demo_portfolio", "rate_hike", 2.0, None, client)
+    assert result_rate["scenario"] == "rate_hike"
+    assert result_rate["affected_positions_count"] > 0
+
+    result_sector = _run_stress_test("demo_portfolio", "sector_decline", 15.0, "нефтегаз", client)
+    assert result_sector["scenario"] == "sector_decline"
+    assert result_sector["target_sector"] == "нефтегаз"
+
+
+def test_sql_validation_rejects_non_select() -> None:
+    """Проверяет запрет non-SELECT SQL запросов."""
+    with pytest.raises(Exception):
+        _validate_and_rewrite_select_query("DELETE FROM portfolios")
+    with pytest.raises(Exception):
+        _validate_and_rewrite_select_query("CREATE TABLE t(x Int32)")
+
+
+def test_sql_validation_adds_limit() -> None:
+    """Проверяет автодобавление LIMIT 1000."""
+    query = _validate_and_rewrite_select_query("SELECT ticker FROM portfolios")
+    assert "LIMIT 1000" in query.upper()
+
+
+def test_execute_analytics_query_returns_limited_rows(fixtures_dir: Path) -> None:
+    """Проверяет безопасное выполнение SQL в mock-режиме."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+    result = _execute_analytics_query("SELECT * FROM portfolios", client)
+    assert result["row_count"] == 10
+    assert "rows" in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_smoke_in_mock_mode(fixtures_dir: Path, monkeypatch) -> None:
+    """Smoke-тест асинхронных MCP-инструментов analytics_server в mock режиме."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+    monkeypatch.setattr("servers.analytics_server.server._get_client", lambda: client)
+
+    summary = await get_portfolio_summary("demo_portfolio")
+    assert summary["total_value"] > 0
+
+    metrics = await calculate_risk_metrics("demo_portfolio", 0.95)
+    assert metrics["volatility"]["value_annual"] > 0
+
+    stress = await run_stress_test("demo_portfolio", "index_drop", 10.0)
+    assert stress["total_loss_rub"] > 0
+
+    sql_result = await execute_analytics_query("SELECT * FROM portfolios")
+    assert sql_result["row_count"] == 10
 

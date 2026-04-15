@@ -35,7 +35,10 @@ class AnalyticsDataClient(Protocol):
     ) -> list[dict]:
         """Возвращает исторические цены по тикерам за указанный диапазон."""
 
-    def execute_select(self, query: str) -> dict[str, list]:
+    def get_bond_details(self, tickers: list[str]) -> dict[str, dict]:
+        """Возвращает словарь параметров облигаций по тикерам."""
+
+    def execute_select(self, query: str) -> dict[str, object]:
         """Выполняет read-only SELECT и возвращает табличный результат."""
 
 
@@ -126,7 +129,33 @@ class ClickHouseClient:
         columns = list(result.column_names)
         return [dict(zip(columns, row, strict=False)) for row in result.result_rows]
 
-    def execute_select(self, query: str) -> dict[str, list]:
+    def get_bond_details(self, tickers: list[str]) -> dict[str, dict]:
+        """Возвращает параметры облигаций из таблицы bond_details."""
+        if not tickers:
+            return {}
+
+        query = """
+            SELECT ticker, duration, coupon_rate, ytm, maturity_date
+            FROM bond_details
+            WHERE ticker IN %(tickers)s
+        """
+        log.info("clickhouse_query", query_name="get_bond_details", tickers_count=len(tickers))
+        result = self._client.query(
+            query,
+            parameters={"tickers": tuple(tickers)},
+            settings={"max_execution_time": self.settings.clickhouse_query_timeout_sec},
+        )
+        return {
+            str(row[0]): {
+                "duration": float(row[1]),
+                "coupon_rate": float(row[2]),
+                "ytm": float(row[3]),
+                "maturity_date": str(row[4]),
+            }
+            for row in result.result_rows
+        }
+
+    def execute_select(self, query: str) -> dict[str, object]:
         """Выполняет read-only SELECT запрос к ClickHouse."""
         log.info("clickhouse_query", query_name="execute_select")
         result = self._client.query(
@@ -150,6 +179,7 @@ class MockClickHouseClient:
     _portfolio_rows: list[dict] = field(init=False, repr=False)
     _candles_config: dict = field(init=False, repr=False)
     _price_rows: list[dict] = field(init=False, repr=False)
+    _bond_details: dict[str, dict] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Загружает fixture-данные и готовит кэш исторических рядов."""
@@ -158,6 +188,7 @@ class MockClickHouseClient:
         self._portfolio_rows = self._load_json("portfolio_sample.json")
         self._candles_config = self._load_json("moex_candles_sample.json")
         self._price_rows = self._generate_price_history()
+        self._bond_details = self._build_mock_bond_details()
 
     def _load_json(self, filename: str) -> list[dict] | dict:
         """Загружает JSON-файл из директории fixtures."""
@@ -218,6 +249,35 @@ class MockClickHouseClient:
 
         return rows
 
+    def _build_mock_bond_details(self) -> dict[str, dict]:
+        """Формирует mock-параметры облигаций для стресс-тестов."""
+        return {
+            "OFZ26243": {
+                "duration": 5.4,
+                "coupon_rate": 11.6,
+                "ytm": 12.0,
+                "maturity_date": "2030-11-15",
+            },
+            "OFZ29024": {
+                "duration": 4.9,
+                "coupon_rate": 10.4,
+                "ytm": 11.1,
+                "maturity_date": "2029-04-24",
+            },
+            "RU000A105ZX4": {
+                "duration": 2.8,
+                "coupon_rate": 13.3,
+                "ytm": 13.9,
+                "maturity_date": "2028-10-01",
+            },
+            "RU000A1061Q0": {
+                "duration": 3.4,
+                "coupon_rate": 12.7,
+                "ytm": 13.2,
+                "maturity_date": "2029-07-20",
+            },
+        }
+
     def get_portfolio_positions(self, portfolio_id: str) -> list[dict]:
         """Возвращает позиции конкретного портфеля из fixture."""
         return [
@@ -255,7 +315,11 @@ class MockClickHouseClient:
             rows = [row for row in rows if row["date"] <= max_date]
         return rows
 
-    def execute_select(self, query: str) -> dict[str, list]:
+    def get_bond_details(self, tickers: list[str]) -> dict[str, dict]:
+        """Возвращает bond_details из подготовленного mock-набора."""
+        return {ticker: self._bond_details[ticker] for ticker in tickers if ticker in self._bond_details}
+
+    def execute_select(self, query: str) -> dict[str, object]:
         """В mock-режиме поддерживает только простые SELECT по fixture-таблицам."""
         normalized = query.strip().lower()
         limit = 1000
@@ -283,6 +347,15 @@ class MockClickHouseClient:
             rows = self._price_rows[:limit]
             columns = ["ticker", "date", "open", "high", "low", "close", "volume"]
             data_rows = [[row[column] for column in columns] for row in rows]
+            return {"columns": columns, "rows": data_rows, "row_count": len(data_rows)}
+
+        if "from bond_details" in normalized:
+            rows = list(self._bond_details.items())[:limit]
+            columns = ["ticker", "duration", "coupon_rate", "ytm", "maturity_date"]
+            data_rows = [
+                [ticker, details["duration"], details["coupon_rate"], details["ytm"], details["maturity_date"]]
+                for ticker, details in rows
+            ]
             return {"columns": columns, "rows": data_rows, "row_count": len(data_rows)}
 
         raise ValueError("MockClickHouseClient поддерживает только SELECT из portfolios/price_history.")
