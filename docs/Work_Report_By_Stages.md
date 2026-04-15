@@ -275,22 +275,44 @@
 
 ## Этап 5. Оркестратор LangGraph
 
-Статус: **не начат (созданы только файлы-заглушки)**.
+Статус: **выполнен**.
 
 Выполнено:
 
-- Подготовлены файлы:
-  - `orchestrator/state.py`
-  - `orchestrator/graph.py`
-  - `orchestrator/mcp_client.py`
-  - `orchestrator/prompts.py`
-  - узлы в `orchestrator/nodes/*`
+- Реализован `orchestrator/state.py`:
+  - `InvestmentAssistantState` с полями планирования, данных и итогового ответа;
+  - тип шага плана `PlanStep`;
+  - фабрика `initial_state()` для CLI/тестов/графа.
+- Реализован `orchestrator/prompts.py`:
+  - системный промпт planner с явными ограничениями на инструменты;
+  - системный промпт summarizer с фиксированным форматом ответа.
+- Реализован `orchestrator/mcp_client.py`:
+  - обертка `OrchestratorMCPClient` над `MultiServerMCPClient`;
+  - подключение `market/news/analytics` как stdio-процессы;
+  - ленивый кэш tool-метаданных и единый `call_tool()`;
+  - унифицированная ошибка `MCPClientError`.
+- Реализованы узлы оркестратора:
+  - `input_node`: валидация запроса, извлечение тикеров, классификация `query_type`;
+  - `planner_node`: схема `PlanSchema`, first-pass генерация плана, safe fallback без LLM, `route_planner`;
+  - `market_executor`: вызов market-tools, retry 1/2/4, no-retry для "тикер не найден";
+  - `news_executor`: вызов news-tools, graceful degradation при серии ошибок;
+  - `analytics_executor`: вызов analytics-tools, fallback-path при сбое риск-расчета;
+  - `summarizer_node`: формирование структурированного `final_answer`.
+- Реализован `orchestrator/graph.py`:
+  - сборка `StateGraph` со всеми узлами и роутингом по ТЗ;
+  - `MemorySaver` checkpointer;
+  - запуск через `run_query()` с `recursion_limit` из settings.
+- Реализованы тесты:
+  - `tests/test_orchestrator.py` (input/planner routing/retry/degrade/fallback/интеграционный mock graph);
+  - `tests/test_e2e.py` (smoke: market-only, news-only, risk-only, complex).
+- Выполнена верификация:
+  - локально `pytest -q`: `39 passed`;
+  - lints по измененным файлам оркестратора: ошибок не выявлено.
 
 Не выполнено:
 
-- TypedDict состояния.
-- Реализация узлов, роутинга и графа.
-- Подключение MCP-серверов.
+- Интеграция planner/summarizer с боевым LLM-контуром Yandex Cloud в режиме нагрузочного теста.
+- UX-слой (CLI/Streamlit) поверх `run_query()` будет закрыт в Этапе 6.
 
 ---
 
@@ -387,8 +409,7 @@
 
 ## Вывод
 
-- Этап 0 завершен и расширен с учетом перехода на Yandex Cloud.
-- Создана стабильная база для начала Этапа 1 (данные/фикстуры/слой доступа).
-- Следующий логичный шаг: реализовать Этап 1 полностью и приступить к
-  функционалу `analytics_server` (Этап 2).
+- Этапы 0-5 реализованы, включая три MCP-сервера и оркестратор LangGraph.
+- Оркестратор покрыт тестами и стабильно проходит smoke/E2E-проверки.
+- Следующий логичный шаг: Этап 6 (CLI и Streamlit UI поверх готового API оркестратора).
 
