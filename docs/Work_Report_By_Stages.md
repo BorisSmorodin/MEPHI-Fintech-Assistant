@@ -447,20 +447,34 @@
 
 ## Этап 9. Документация и финализация
 
-Статус: **частично выполнен**.
+Статус: **выполнен**.
 
 Выполнено:
 
-- Подготовлен детализированный план:
-  `docs/Implementation_Plan_InvestmentAssistant.md`.
-- Обновлен `README.md` с учетом текущего стека и провайдера LLM.
-- Сформирован текущий отчет:
-  `docs/Work_Report_By_Stages.md`.
+- Полностью обновлен `README.md` как единая точка входа:
+  - полный цикл запуска (окружение, MCP-серверы, CLI, Streamlit, тесты);
+  - таблица переменных окружения (обязательные/опциональные);
+  - ограничения прототипа и ссылки на сопутствующую документацию.
+- Подготовлен комплект технической документации в `docs/`:
+  - `Architecture_and_Data_Flows.md` (слои, потоки, sequence/flow диаграммы);
+  - `MCP_Tool_Contracts.md` (контракты инструментов market/news/analytics);
+  - `LangGraph_State_Flow.md` (state, переходы узлов, safe-degradation);
+  - `Final_Verification_Artifacts.md` (команды прогона, ожидаемые результаты, known issues).
+- Подготовлен пакет предзащиты:
+  - `Defense_Demo_Scenarios.md` (5 сценариев ТЗ, fallback-кейсы, чеклист показа);
+  - quick troubleshooting по типовым сбоям запуска.
+- Закрыт контур воспроизводимости:
+  - `Clean_Machine_Runbook.md` с пошаговым запуском на чистой машине;
+  - выполнен dry-run в изолированном окружении `.venv_stage9_dryrun`.
+- Фактическая верификация dry-run:
+  - `UV_PROJECT_ENVIRONMENT=.venv_stage9_dryrun uv sync --group dev` -> успешно;
+  - `.venv_stage9_dryrun/Scripts/python -m pytest -q` -> `59 passed, 1 warning`;
+  - `.venv_stage9_dryrun/Scripts/python tests/quality_metrics_report.py --metrics-path data/fixtures/quality_metrics.jsonl`
+    -> корректный JSON-отчет.
 
 Не выполнено:
 
-- Полная эксплуатационная документация по мере реализации функционала.
-- Финальные инструкции и демонстрационные сценарии для защиты.
+- Дополнительная автоматизация демонстрации (например, скрипт one-click показа) — опционально.
 
 ---
 
@@ -483,9 +497,9 @@
 
 ## Вывод
 
-- Этапы 0-8 реализованы: включая hardening по SQL/prompt injection/allowlist/degradation и
-  полное тестирование по ТЗ.
+- Этапы 0-9 реализованы: включая hardening по SQL/prompt injection/allowlist/degradation,
+  полное тестирование по ТЗ и финальный документационный пакет.
 - Проект проходит актуальный набор тестов (`59 passed`), включая негативные security-сценарии
   и проверки метрик качества.
-- Следующий логичный шаг: Этап 9 (документация и финализация).
+- Следующий логичный шаг: подготовка к защите и демонстрация по сценариям из `docs/Defense_Demo_Scenarios.md`.
 

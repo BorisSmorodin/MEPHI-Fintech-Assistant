@@ -3,23 +3,13 @@
 Прототип инвестиционного ассистента для мониторинга российского рынка, анализа новостей
 и оценки рисков портфеля на базе `LangGraph + MCP`.
 
-## Требования
+## Технологический стек
 
 - Python 3.11+
-- Локальное виртуальное окружение в `.venv`
-- Пакетный менеджер `uv`
-
-## Быстрый старт
-
-1. Скопировать шаблон окружения:
-   - `.env.example` -> `.env`
-2. Заполнить значения:
-   - `YANDEX_CLOUD_API_KEY`
-   - `YANDEX_CLOUD_FOLDER`
-   - `YANDEX_CLOUD_MODEL`
-   - `CLICKHOUSE_PASSWORD`
-3. Установить зависимости:
-   - `uv sync --group dev`
+- `uv` для управления зависимостями
+- `FastMCP` для MCP-серверов (`market`, `news`, `analytics`)
+- `LangGraph` для оркестрации
+- `Streamlit` и `Typer` для UI
 
 ## Провайдер LLM
 
@@ -27,8 +17,87 @@
 - Базовый URL: `https://ai.api.cloud.yandex.net/v1`
 - Формат модели при прямом вызове API: `gpt://<folder>/<model>`
 
-## Текущий статус
+## Полный запуск проекта
 
-- Этап 0 выполнен: подготовлены базовые конфиги и инфраструктурные файлы.
-- Реализация серверов, оркестратора и UI будет выполняться поэтапно.
+### 1) Подготовка окружения
+
+1. Скопировать шаблон окружения:
+   - `.env.example` -> `.env`
+2. Заполнить обязательные параметры (см. таблицу ниже).
+3. Установить зависимости:
+   - `uv sync --group dev`
+
+### 2) Запуск MCP-серверов
+
+Откройте отдельный терминал для каждого сервера:
+
+- Market server:
+  - `python -m servers.market_server.server`
+- News server:
+  - `python -m servers.news_server.server`
+- Analytics server:
+  - `python -m servers.analytics_server.server`
+
+### 3) Запуск пользовательских интерфейсов
+
+- CLI:
+  - `python -m ui.cli chat`
+- Streamlit:
+  - `streamlit run ui/streamlit_app.py`
+
+### 4) Запуск тестов
+
+- Полный прогон:
+  - `pytest -q`
+- Целевые наборы:
+  - `pytest -q tests/test_orchestrator.py tests/test_e2e.py`
+  - `pytest -q servers/market_server/tests/test_market.py`
+  - `pytest -q servers/news_server/tests/test_news.py`
+  - `pytest -q servers/analytics_server/tests/test_analytics.py`
+
+### 5) Отчет по метрикам качества
+
+- Сводный отчет из JSONL:
+  - `python tests/quality_metrics_report.py --metrics-path data/fixtures/quality_metrics.jsonl`
+
+## Переменные окружения
+
+| Переменная | Обязательность | Назначение | Пример |
+|---|---|---|---|
+| `YANDEX_CLOUD_API_KEY` | Обязательная | API-ключ Yandex Cloud LLM | `AQVN...` |
+| `YANDEX_CLOUD_FOLDER` | Обязательная | ID каталога Yandex Cloud | `b1gur7u1r8761kpsbj6g` |
+| `YANDEX_CLOUD_MODEL` | Обязательная | Базовая LLM-модель | `gpt-oss-120b/latest` |
+| `CLICKHOUSE_PASSWORD` | Обязательная для real ClickHouse | Пароль read-only пользователя CH | `readonly_password` |
+| `USE_MOCK_CLICKHOUSE` | Опциональная | Использование фикстур вместо реального CH | `true` |
+| `CLICKHOUSE_HOST` | Опциональная | Хост ClickHouse | `localhost` |
+| `CLICKHOUSE_PORT` | Опциональная | Порт ClickHouse | `8123` |
+| `CLICKHOUSE_DATABASE` | Опциональная | База ClickHouse | `investment` |
+| `CLICKHOUSE_USER` | Опциональная | Read-only пользователь CH | `readonly_user` |
+| `LLM_BASE_URL` | Опциональная | OpenAI-compatible endpoint | `https://ai.api.cloud.yandex.net/v1` |
+| `LLM_MODEL` | Опциональная | Альтернативное имя модели | `gpt-oss-120b/latest` |
+| `LLM_TEMPERATURE` | Опциональная | Температура генерации | `0.1` |
+| `MAX_RECURSION` | Опциональная | Лимит рекурсии LangGraph | `10` |
+| `MAX_ERROR_COUNT` | Опциональная | Лимит ошибок перед деградацией | `3` |
+| `MARKET_SERVER_TIMEOUT` | Опциональная | Таймаут market API вызовов | `30` |
+| `NEWS_SERVER_CACHE_TTL` | Опциональная | TTL кэша RSS | `300` |
+| `QUALITY_METRICS_PATH` | Опциональная | Путь к JSONL-метрикам | `data/fixtures/quality_metrics.jsonl` |
+| `QUALITY_METRICS_ENABLE_FILE` | Опциональная | Включение записи метрик в файл | `false` |
+
+## Известные ограничения прототипа
+
+- MOEX ISS API публичный, данные могут поступать с задержкой.
+- Тональность новостей определяется эвристически, без отдельной ML/LLM-классификации.
+- Стресс-тесты и risk-метрики реализованы в упрощенной параметрической постановке.
+- Система предназначена для учебно-исследовательских задач и не является инвестиционной рекомендацией.
+
+## Полезные документы
+
+- Техническое задание: `docs/TZ_InvestmentAssistant.md`
+- План реализации: `docs/Implementation_Plan_InvestmentAssistant.md`
+- Отчет по этапам: `docs/Work_Report_By_Stages.md`
+- Потоки данных и архитектура: `docs/Architecture_and_Data_Flows.md`
+- Контракты MCP: `docs/MCP_Tool_Contracts.md`
+- Переходы состояния LangGraph: `docs/LangGraph_State_Flow.md`
+- Сценарии предзащиты: `docs/Defense_Demo_Scenarios.md`
+- Runbook чистой машины: `docs/Clean_Machine_Runbook.md`
 
