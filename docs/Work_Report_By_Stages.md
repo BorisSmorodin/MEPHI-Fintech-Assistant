@@ -229,21 +229,47 @@
 
 ## Этап 4. Реализация news_server
 
-Статус: **не начат (созданы только файлы-заглушки)**.
+Статус: **выполнен**.
 
 Выполнено:
 
-- Подготовлены файлы:
-  - `servers/news_server/server.py`
-  - `servers/news_server/rss_fetcher.py`
-  - `servers/news_server/sentiment.py`
-  - `servers/news_server/tests/test_news.py`
+- Реализован `servers/news_server/rss_fetcher.py`:
+  - конфигурация источников `cbr/interfax/tass/rbc/smartlab/cbonds`
+    с уровнями доверия `HIGH/MEDIUM/LOW`;
+  - загрузка RSS через `feedparser` с таймаутом HTTP 10 секунд;
+  - in-memory TTL-кэш RSS лент (`300` секунд);
+  - унификация новостной записи (`title/url/published/source/source_trust/summary`);
+  - фильтрация по `query` и `sources`, дедупликация `title + source`,
+    сортировка по дате (desc);
+  - fallback-обработка недоступных источников с `warning` логированием.
+- Реализован `servers/news_server/sentiment.py`:
+  - словари позитивных/негативных маркеров;
+  - `classify_sentiment` (`positive/negative/neutral`);
+  - `compute_sentiment_score` в диапазоне `[-1, +1]`;
+  - обработка граничных случаев пустого и неоднозначного текста.
+- Реализован `servers/news_server/server.py` (FastMCP):
+  - инструменты `fetch_news`, `get_cb_key_rate`, `get_market_sentiment`,
+    `get_macro_calendar`;
+  - docstring-описания и аннотации `readOnlyHint/idempotentHint`;
+  - логирование вызовов/ошибок через `structlog`;
+  - преобразование ожидаемых ошибок в `ToolError`;
+  - зафиксирован принцип: LLM внутри `news_server` не используется.
+- Расширены тесты `servers/news_server/tests/test_news.py`:
+  - sentiment эвристика и score;
+  - разбор RSS на моках;
+  - дедупликация и сортировка;
+  - кэш `miss/hit/expiration`;
+  - устойчивость к недоступному источнику;
+  - smoke MCP-инструментов в mock-режиме.
 
 Не выполнено:
 
-- RSS-агрегация, кэш, обработка недоступности источников.
-- Эвристическая тональность и агрегированные метрики.
-- Тестирование функциональности.
+- Глубокая интеграция с внешними календарями макро-событий помимо базового
+  списка заседаний ЦБ (может быть усилена на этапах hardening).
+
+Проверки:
+
+- Локальный прогон `pytest`: `29 passed`.
 
 ---
 
