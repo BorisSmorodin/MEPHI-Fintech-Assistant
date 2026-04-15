@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.graph import run_query
+from ui.cli import format_debug_payload, process_cli_input
+from ui.streamlit_app import build_effective_query, execute_streamlit_query
 
 
 @pytest.fixture
@@ -79,4 +81,49 @@ async def test_e2e_complex() -> None:
     """Комплексный сценарий с несколькими серверами."""
     result = await run_query("Оцени портфель demo_portfolio с учетом новостей по GAZP и котировки SBER")
     assert result["final_answer"]
+
+
+def test_cli_command_parsing_and_debug() -> None:
+    """Проверяет команды REPL и debug-представление."""
+    assert process_cli_input("", None).action == "noop"
+    assert process_cli_input("exit", None).action == "exit"
+    assert process_cli_input("clear", None).action == "clear"
+
+    debug_result = process_cli_input("debug", {"query_type": "complex", "plan": [], "warnings": []})
+    assert debug_result.action == "debug"
+    assert "query_type" in (debug_result.message or "")
+    assert "complex" in (debug_result.message or "")
+    assert "пока нет выполненных запросов" in format_debug_payload(None)
+
+
+def test_streamlit_query_builder() -> None:
+    """Проверяет формирование итогового query для UI."""
+    original = "Оцени риск портфеля demo_portfolio"
+    assert build_effective_query(original, "demo_portfolio") == original
+    assert "portfolio_id: p1" in build_effective_query("Оцени риск", "p1")
+
+
+@pytest.mark.asyncio
+async def test_streamlit_handler_smoke(monkeypatch) -> None:
+    """Проверяет handler-level smoke для Streamlit без запуска браузера."""
+
+    async def _fake_run_query(user_query: str, state_overrides=None):
+        return {
+            "user_query": user_query,
+            "final_answer": "Ответ готов.",
+            "warnings": [],
+            "error_count": 0,
+            "query_type": "complex",
+            "plan": [],
+            "state_overrides": state_overrides,
+        }
+
+    monkeypatch.setattr("ui.streamlit_app.run_query", _fake_run_query)
+    result = await execute_streamlit_query(
+        user_query="Покажи котировку SBER",
+        portfolio_id="demo_portfolio",
+        selected_model="gpt-oss-120b",
+    )
+    assert result["final_answer"] == "Ответ готов."
+    assert any("UI model preference" in row for row in result["warnings"])
 
