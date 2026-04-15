@@ -109,9 +109,13 @@ def test_factory_returns_mock_client_when_enabled() -> None:
 
 def test_factory_returns_real_client_when_disabled(monkeypatch) -> None:
     """Проверяет, что фабрика возвращает real-клиент при отключенном mock режиме."""
+    class DummyResult:
+        column_names = ("one",)
+        result_rows = [(1,)]
+
     class DummyClickHouseConnection:
         def query(self, *_args, **_kwargs):
-            raise RuntimeError("Not expected in this test")
+            return DummyResult()
 
     monkeypatch.setattr(
         "servers.analytics_server.clickhouse_client.clickhouse_connect.get_client",
@@ -120,6 +124,44 @@ def test_factory_returns_real_client_when_disabled(monkeypatch) -> None:
     settings = Settings(use_mock_clickhouse=False)
     client = get_analytics_data_client(settings)
     assert isinstance(client, ClickHouseClient)
+
+
+def test_factory_falls_back_to_mock_when_clickhouse_unavailable(monkeypatch) -> None:
+    """Проверяет fallback real->mock при недоступном ClickHouse."""
+
+    class UnavailableClickHouseConnection:
+        def query(self, *_args, **_kwargs):
+            raise ConnectionError("clickhouse unavailable")
+
+    monkeypatch.setattr(
+        "servers.analytics_server.clickhouse_client.clickhouse_connect.get_client",
+        lambda **_kwargs: UnavailableClickHouseConnection(),
+    )
+    settings = Settings(
+        use_mock_clickhouse=False,
+        allow_mock_fallback_on_clickhouse_error=True,
+    )
+    client = get_analytics_data_client(settings)
+    assert isinstance(client, MockClickHouseClient)
+
+
+def test_factory_raises_when_clickhouse_unavailable_and_fallback_disabled(monkeypatch) -> None:
+    """Проверяет ошибку при недоступном ClickHouse и выключенном fallback."""
+
+    class UnavailableClickHouseConnection:
+        def query(self, *_args, **_kwargs):
+            raise ConnectionError("clickhouse unavailable")
+
+    monkeypatch.setattr(
+        "servers.analytics_server.clickhouse_client.clickhouse_connect.get_client",
+        lambda **_kwargs: UnavailableClickHouseConnection(),
+    )
+    settings = Settings(
+        use_mock_clickhouse=False,
+        allow_mock_fallback_on_clickhouse_error=False,
+    )
+    with pytest.raises(ConnectionError):
+        get_analytics_data_client(settings)
 
 
 def test_mock_client_reads_portfolio_and_price_history(fixtures_dir: Path) -> None:

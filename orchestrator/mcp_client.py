@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -23,6 +24,9 @@ class OrchestratorMCPClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         project_root = Path(__file__).resolve().parents[1]
+        server_env = dict(os.environ)
+        server_env["PYTHONIOENCODING"] = "utf-8"
+        server_env["PYTHONUTF8"] = "1"
         self._client = MultiServerMCPClient(
             {
                 "market": {
@@ -30,18 +34,21 @@ class OrchestratorMCPClient:
                     "command": sys.executable,
                     "args": ["-m", "servers.market_server.server"],
                     "cwd": project_root,
+                    "env": server_env,
                 },
                 "news": {
                     "transport": "stdio",
                     "command": sys.executable,
                     "args": ["-m", "servers.news_server.server"],
                     "cwd": project_root,
+                    "env": server_env,
                 },
                 "analytics": {
                     "transport": "stdio",
                     "command": sys.executable,
                     "args": ["-m", "servers.analytics_server.server"],
                     "cwd": project_root,
+                    "env": server_env,
                 },
             }
         )

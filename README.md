@@ -22,10 +22,10 @@
 ### 1) Подготовка окружения
 
 1. Скопировать шаблон окружения:
-   - `.env.example` -> `.env`
+  - `.env.example` -> `.env`
 2. Заполнить обязательные параметры (см. таблицу ниже).
 3. Установить зависимости:
-   - `uv sync --group dev`
+  - `uv sync --group dev`
 
 ### 2) Запуск MCP-серверов
 
@@ -41,7 +41,7 @@
 ### 3) Запуск пользовательских интерфейсов
 
 - CLI:
-  - `python -m ui.cli chat`
+  - `python -m ui.cli`
 - Streamlit:
   - `streamlit run ui/streamlit_app.py`
 
@@ -60,28 +60,42 @@
 - Сводный отчет из JSONL:
   - `python tests/quality_metrics_report.py --metrics-path data/fixtures/quality_metrics.jsonl`
 
+### 6) Диагностика запуска CLI/MCP
+
+- Ошибка `Got unexpected extra argument (chat)`:
+  - используйте `python -m ui.cli` (без `chat` в аргументах).
+- Ошибка `Failed to parse JSONRPC message from server`:
+  - убедитесь, что MCP-сервисы не пишут служебные логи в `stdout`;
+  - перезапустите CLI после обновления окружения/зависимостей.
+- Ошибка ClickHouse `WinError 10061`:
+  - либо запустите локальный ClickHouse;
+  - либо включите mock-режим (`USE_MOCK_CLICKHOUSE=true`);
+  - проверьте параметры `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`.
+
 ## Переменные окружения
 
-| Переменная | Обязательность | Назначение | Пример |
-|---|---|---|---|
-| `YANDEX_CLOUD_API_KEY` | Обязательная | API-ключ Yandex Cloud LLM | `AQVN...` |
-| `YANDEX_CLOUD_FOLDER` | Обязательная | ID каталога Yandex Cloud | `b1gur7u1r8761kpsbj6g` |
-| `YANDEX_CLOUD_MODEL` | Обязательная | Базовая LLM-модель | `gpt-oss-120b/latest` |
-| `CLICKHOUSE_PASSWORD` | Обязательная для real ClickHouse | Пароль read-only пользователя CH | `readonly_password` |
-| `USE_MOCK_CLICKHOUSE` | Опциональная | Использование фикстур вместо реального CH | `true` |
-| `CLICKHOUSE_HOST` | Опциональная | Хост ClickHouse | `localhost` |
-| `CLICKHOUSE_PORT` | Опциональная | Порт ClickHouse | `8123` |
-| `CLICKHOUSE_DATABASE` | Опциональная | База ClickHouse | `investment` |
-| `CLICKHOUSE_USER` | Опциональная | Read-only пользователь CH | `readonly_user` |
-| `LLM_BASE_URL` | Опциональная | OpenAI-compatible endpoint | `https://ai.api.cloud.yandex.net/v1` |
-| `LLM_MODEL` | Опциональная | Альтернативное имя модели | `gpt-oss-120b/latest` |
-| `LLM_TEMPERATURE` | Опциональная | Температура генерации | `0.1` |
-| `MAX_RECURSION` | Опциональная | Лимит рекурсии LangGraph | `10` |
-| `MAX_ERROR_COUNT` | Опциональная | Лимит ошибок перед деградацией | `3` |
-| `MARKET_SERVER_TIMEOUT` | Опциональная | Таймаут market API вызовов | `30` |
-| `NEWS_SERVER_CACHE_TTL` | Опциональная | TTL кэша RSS | `300` |
-| `QUALITY_METRICS_PATH` | Опциональная | Путь к JSONL-метрикам | `data/fixtures/quality_metrics.jsonl` |
-| `QUALITY_METRICS_ENABLE_FILE` | Опциональная | Включение записи метрик в файл | `false` |
+
+| Переменная                    | Обязательность                   | Назначение                                | Пример                                |
+| ----------------------------- | -------------------------------- | ----------------------------------------- | ------------------------------------- |
+| `YANDEX_CLOUD_API_KEY`        | Обязательная                     | API-ключ Yandex Cloud LLM                 | `AQVN...`                             |
+| `YANDEX_CLOUD_FOLDER`         | Обязательная                     | ID каталога Yandex Cloud                  | `b1gur7u1r8761kpsbj6g`                |
+| `YANDEX_CLOUD_MODEL`          | Обязательная                     | Базовая LLM-модель                        | `gpt-oss-120b/latest`                 |
+| `CLICKHOUSE_PASSWORD`         | Обязательная для real ClickHouse | Пароль read-only пользователя CH          | `readonly_password`                   |
+| `USE_MOCK_CLICKHOUSE`         | Опциональная                     | Использование фикстур вместо реального CH | `true`                                |
+| `CLICKHOUSE_HOST`             | Опциональная                     | Хост ClickHouse                           | `localhost`                           |
+| `CLICKHOUSE_PORT`             | Опциональная                     | Порт ClickHouse                           | `8123`                                |
+| `CLICKHOUSE_DATABASE`         | Опциональная                     | База ClickHouse                           | `investment`                          |
+| `CLICKHOUSE_USER`             | Опциональная                     | Read-only пользователь CH                 | `readonly_user`                       |
+| `LLM_BASE_URL`                | Опциональная                     | OpenAI-compatible endpoint                | `https://ai.api.cloud.yandex.net/v1`  |
+| `LLM_MODEL`                   | Опциональная                     | Альтернативное имя модели                 | `gpt-oss-120b/latest`                 |
+| `LLM_TEMPERATURE`             | Опциональная                     | Температура генерации                     | `0.1`                                 |
+| `MAX_RECURSION`               | Опциональная                     | Лимит рекурсии LangGraph                  | `10`                                  |
+| `MAX_ERROR_COUNT`             | Опциональная                     | Лимит ошибок перед деградацией            | `3`                                   |
+| `MARKET_SERVER_TIMEOUT`       | Опциональная                     | Таймаут market API вызовов                | `30`                                  |
+| `NEWS_SERVER_CACHE_TTL`       | Опциональная                     | TTL кэша RSS                              | `300`                                 |
+| `QUALITY_METRICS_PATH`        | Опциональная                     | Путь к JSONL-метрикам                     | `data/fixtures/quality_metrics.jsonl` |
+| `QUALITY_METRICS_ENABLE_FILE` | Опциональная                     | Включение записи метрик в файл            | `false`                               |
+
 
 ## Известные ограничения прототипа
 

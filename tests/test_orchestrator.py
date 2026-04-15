@@ -24,6 +24,9 @@ async def test_input_node_validation_and_classification() -> None:
     assert result["query_type"] == "market_monitor"
     assert "SBER" in result["extracted_tickers"]
 
+    stress_result = await input_node({"user_query": "Проведи сценарий падения IMOEX на 20%"})
+    assert stress_result["query_type"] == "risk_assessment"
+
 
 @pytest.mark.asyncio
 async def test_planner_routing() -> None:
@@ -51,6 +54,13 @@ async def test_planner_routing_news_and_risk() -> None:
     risk_state["extracted_tickers"] = ["SBER"]
     risk_result = await planner_node(risk_state)
     assert risk_result["next_node"] == "analytics_executor"
+
+    stress_state = initial_state("Проведи сценарий падения IMOEX на 20% для demo_portfolio")
+    stress_state["query_type"] = "risk_assessment"
+    stress_state["extracted_tickers"] = ["IMOEX"]
+    stress_result = await planner_node(stress_state)
+    assert stress_result["next_node"] == "analytics_executor"
+    assert stress_result["plan"][0]["tool_name"] == "run_stress_test"
 
 
 def test_route_planner_defaults_to_summarizer() -> None:

@@ -8,6 +8,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 import structlog
 
+from config.logging_setup import configure_structlog_for_mcp_stdio
 from servers.market_server.moex_client import (
     MarketDataError,
     MoexClient,
@@ -15,6 +16,7 @@ from servers.market_server.moex_client import (
     get_moex_client,
 )
 
+configure_structlog_for_mcp_stdio()
 log = structlog.get_logger()
 mcp = FastMCP("market_server")
 _client: MoexClient | None = None
@@ -120,5 +122,5 @@ async def get_bond_data(ticker: str) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(show_banner=False)
 

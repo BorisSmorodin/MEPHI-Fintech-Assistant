@@ -11,6 +11,7 @@ import sqlglot
 from sqlglot import exp
 import structlog
 
+from config.logging_setup import configure_structlog_for_mcp_stdio
 from config.settings import get_settings
 from servers.analytics_server.clickhouse_client import (
     AnalyticsDataClient,
@@ -19,6 +20,7 @@ from servers.analytics_server.clickhouse_client import (
 from servers.analytics_server.risk_calculator import calculate_risk_metrics as calculate_risk_metrics_core
 from servers.analytics_server.stress_tester import run_stress_test as run_stress_test_core
 
+configure_structlog_for_mcp_stdio()
 log = structlog.get_logger()
 settings = get_settings()
 mcp = FastMCP("analytics_server")
@@ -304,5 +306,5 @@ async def execute_analytics_query(query: str) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(show_banner=False)
 

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # Dev
     use_mock_clickhouse: bool = False
+    allow_mock_fallback_on_clickhouse_error: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

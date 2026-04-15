@@ -10,9 +10,11 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 import structlog
 
+from config.logging_setup import configure_structlog_for_mcp_stdio
 from servers.news_server.rss_fetcher import NEWS_SOURCES, NewsFetchError, NewsFetcher, get_news_fetcher
 from servers.news_server.sentiment import classify_sentiment, compute_sentiment_score
 
+configure_structlog_for_mcp_stdio()
 log = structlog.get_logger()
 mcp = FastMCP("news_server")
 _fetcher: NewsFetcher | None = None
@@ -176,5 +178,5 @@ async def get_macro_calendar(date_from: str, date_to: str) -> list[dict[str, Any
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(show_banner=False)
 

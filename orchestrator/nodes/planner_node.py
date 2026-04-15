@@ -31,6 +31,7 @@ class PlanSchema(BaseModel):
 
 
 PORTFOLIO_RE = re.compile(r"\b[\w-]*portfolio[\w-]*\b", re.IGNORECASE)
+PERCENT_RE = re.compile(r"-?\d+(?:[.,]\d+)?\s*%")
 
 
 def _detect_portfolio_id(query: str) -> str:
@@ -39,6 +40,16 @@ def _detect_portfolio_id(query: str) -> str:
     if match:
         return match.group(0)
     return "demo_portfolio"
+
+
+def _is_stress_intent(query: str) -> bool:
+    """Определяет стресс-сценарий по ключевым маркерам в тексте запроса."""
+    lowered = query.lower()
+    if any(keyword in lowered for keyword in {"стресс", "stress", "сценар", "шок", "паден"}):
+        return True
+    has_percent = bool(PERCENT_RE.search(lowered))
+    has_index = any(keyword in lowered for keyword in {"imoex", "rtsi", "rgbi", "индекс"})
+    return has_percent and has_index
 
 
 def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
@@ -105,7 +116,7 @@ def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
             step_counter += 1
 
     if query_type in {"risk_assessment", "complex"}:
-        if "стресс" in query.lower():
+        if _is_stress_intent(query):
             scenario = "index_drop"
             magnitude = 20.0
             if "ставк" in query.lower():

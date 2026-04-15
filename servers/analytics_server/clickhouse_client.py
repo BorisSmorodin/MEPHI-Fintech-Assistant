@@ -369,5 +369,14 @@ def get_analytics_data_client(settings: Settings | None = None) -> AnalyticsData
         return MockClickHouseClient(current_settings)
 
     log.info("analytics_data_client_selected", mode="real")
-    return ClickHouseClient(current_settings)
+    try:
+        client = ClickHouseClient(current_settings)
+        # Пробный запрос позволяет рано обнаружить недоступность ClickHouse.
+        client.execute_select("SELECT 1")
+        return client
+    except Exception as error:
+        if current_settings.allow_mock_fallback_on_clickhouse_error:
+            log.warning("analytics_clickhouse_unavailable_fallback_to_mock", error=str(error))
+            return MockClickHouseClient(current_settings)
+        raise
 

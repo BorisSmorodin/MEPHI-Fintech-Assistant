@@ -10,15 +10,24 @@ from langchain_core.messages import HumanMessage
 from orchestrator.state import QueryType
 
 TICKER_PATTERN = re.compile(r"\b[A-Z0-9]{3,12}\b")
+PERCENT_PATTERN = re.compile(r"-?\d+(?:[.,]\d+)?\s*%")
 
 MARKET_KEYWORDS = {"котиров", "объём", "объем", "торг", "курс", "imoex", "rtsi", "тикер"}
 NEWS_KEYWORDS = {"новост", "событ", "объявл", "ставк", "цб", "влияни"}
 RISK_KEYWORDS = {"риск", "портфел", "var", "просад", "диверсификац", "стресс"}
+STRESS_KEYWORDS = {"стресс", "stress", "сценар", "шок", "паден"}
 
 
 def _classify_query_type(query: str) -> QueryType:
     """Классифицирует тип запроса по ключевым словам."""
     lowered = query.lower()
+    has_percentage = bool(PERCENT_PATTERN.search(lowered))
+    has_index_reference = any(keyword in lowered for keyword in {"imoex", "rtsi", "rgbi", "индекс"})
+    if any(keyword in lowered for keyword in STRESS_KEYWORDS):
+        return "risk_assessment"
+    if has_percentage and has_index_reference:
+        return "risk_assessment"
+
     matches = 0
     query_type: QueryType = "complex"
     if any(keyword in lowered for keyword in MARKET_KEYWORDS):
