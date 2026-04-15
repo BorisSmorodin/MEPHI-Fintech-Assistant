@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 import sqlglot
+from fastmcp.exceptions import ToolError
 
 from config.settings import Settings
 from servers.analytics_server.clickhouse_client import (
@@ -216,12 +217,22 @@ def test_sql_validation_rejects_non_select() -> None:
         _validate_and_rewrite_select_query("DELETE FROM portfolios")
     with pytest.raises(Exception):
         _validate_and_rewrite_select_query("CREATE TABLE t(x Int32)")
+    with pytest.raises(Exception):
+        _validate_and_rewrite_select_query("SELECT * FROM portfolios; SELECT * FROM price_history")
+    with pytest.raises(Exception):
+        _validate_and_rewrite_select_query("SELECT * FROM portfolios; DROP TABLE portfolios")
 
 
 def test_sql_validation_adds_limit() -> None:
     """Проверяет автодобавление LIMIT 1000."""
     query = _validate_and_rewrite_select_query("SELECT ticker FROM portfolios")
     assert "LIMIT 1000" in query.upper()
+
+
+def test_sql_validation_keeps_existing_limit() -> None:
+    """Проверяет сохранение явно заданного лимита."""
+    query = _validate_and_rewrite_select_query("SELECT ticker FROM portfolios LIMIT 25")
+    assert "LIMIT 25" in query.upper()
 
 
 def test_execute_analytics_query_returns_limited_rows(fixtures_dir: Path) -> None:
@@ -249,4 +260,38 @@ async def test_mcp_tool_smoke_in_mock_mode(fixtures_dir: Path, monkeypatch) -> N
 
     sql_result = await execute_analytics_query("SELECT * FROM portfolios")
     assert sql_result["row_count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_execute_analytics_query_timeout_is_safely_wrapped(monkeypatch) -> None:
+    """Проверяет безопасную обработку таймаута аналитического SQL."""
+
+    class TimeoutClient:
+        def execute_select(self, _query: str):
+            raise TimeoutError("query exceeded 30s and includes internal details")
+
+    monkeypatch.setattr("servers.analytics_server.server._get_client", lambda: TimeoutClient())
+    with pytest.raises(ToolError) as error:
+        await execute_analytics_query("SELECT * FROM portfolios")
+    assert "Ошибка выполнения аналитического запроса" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_calculate_risk_metrics_invalid_confidence_is_wrapped(fixtures_dir: Path, monkeypatch) -> None:
+    """Проверяет безопасную обработку невалидного confidence."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+    monkeypatch.setattr("servers.analytics_server.server._get_client", lambda: client)
+    with pytest.raises(ToolError) as error:
+        await calculate_risk_metrics("demo_portfolio", confidence=0.3)
+    assert "Ошибка расчета риск-метрик" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_run_stress_test_invalid_scenario_is_wrapped(fixtures_dir: Path, monkeypatch) -> None:
+    """Проверяет безопасную обработку невалидного сценария стресс-теста."""
+    client = MockClickHouseClient(settings=Settings(use_mock_clickhouse=True), fixtures_dir=fixtures_dir)
+    monkeypatch.setattr("servers.analytics_server.server._get_client", lambda: client)
+    with pytest.raises(ToolError) as error:
+        await run_stress_test("demo_portfolio", scenario="bad_scenario", magnitude=10.0)
+    assert "Ошибка стресс-тестирования" in str(error.value)
 

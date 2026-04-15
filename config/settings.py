@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # Оркестратор
     max_recursion: int = 10
     max_error_count: int = 3
+    quality_metrics_path: str = "data/fixtures/quality_metrics.jsonl"
+    quality_metrics_enable_file: bool = False
 
     # Dev
     use_mock_clickhouse: bool = False

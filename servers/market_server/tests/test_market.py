@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 import requests
+from fastmcp.exceptions import ToolError
 
 from config.settings import Settings
 from servers.market_server.moex_client import (
@@ -81,6 +82,28 @@ def test_get_candles_validations(monkeypatch) -> None:
         client.get_candles("SBER", "2020-01-01", "2026-01-01", 24)
     with pytest.raises(MarketDataError):
         client.get_candles("SBER", "2025-01-01", "2025-01-10", 999)
+
+
+def test_get_candles_success_contract(monkeypatch) -> None:
+    """Проверяет контракт ответа get_candles."""
+    client = _make_client(monkeypatch)
+    monkeypatch.setattr(
+        "servers.market_server.moex_client.apimoex.get_market_candles",
+        lambda *_args, **_kwargs: [
+            {
+                "begin": "2025-01-01 00:00:00",
+                "open": 300.0,
+                "high": 305.0,
+                "low": 299.0,
+                "close": 304.0,
+                "volume": 1500.0,
+            }
+        ],
+    )
+    result = client.get_candles("SBER", "2025-01-01", "2025-01-10", 24)
+    assert len(result) == 1
+    assert result[0]["close"] == 304.0
+    assert result[0]["high"] >= result[0]["low"]
 
 
 def test_get_board_securities_board_validation(monkeypatch) -> None:
@@ -199,4 +222,19 @@ async def test_market_server_tool_smoke(monkeypatch) -> None:
     assert index_data["value"] == 3200.0
     bond = await get_bond_data("OFZ26243")
     assert bond["SECID"] == "OFZ26243"
+
+
+@pytest.mark.asyncio
+async def test_market_server_tools_wrap_client_errors(monkeypatch) -> None:
+    """Проверяет безопасное оборачивание ошибок в ToolError."""
+
+    class FailingClient:
+        def get_stock_quote(self, _ticker: str) -> dict[str, Any]:
+            raise MarketDataError("внутренняя ошибка источника")
+
+    monkeypatch.setattr("servers.market_server.server._get_client", lambda: FailingClient())
+
+    with pytest.raises(ToolError) as error:
+        await get_stock_quote("SBER")
+    assert "внутренняя ошибка источника" in str(error.value)
 

@@ -58,29 +58,70 @@ def patch_mcp_client(monkeypatch, fake_mcp_client):
 @pytest.mark.asyncio
 async def test_e2e_market_only() -> None:
     """Сценарий market-only."""
-    result = await run_query("Покажи котировку SBER")
+    result = await run_query(
+        "Покажи котировку SBER",
+        scenario_name="market_only",
+        expected_servers={"market"},
+    )
     assert result["final_answer"]
+    assert "get_stock_quote" in result["market_data"]
+    assert result["quality_metrics"]["tool_selection_correct"] is True
 
 
 @pytest.mark.asyncio
 async def test_e2e_news_only() -> None:
     """Сценарий news-only."""
-    result = await run_query("Последние новости по Газпрому")
+    result = await run_query(
+        "Последние новости по Газпрому",
+        scenario_name="news_only",
+        expected_servers={"news"},
+    )
     assert result["final_answer"]
+    assert len(result["news_data"]) >= 1
+    assert result["quality_metrics"]["tool_selection_correct"] is True
 
 
 @pytest.mark.asyncio
 async def test_e2e_risk_only() -> None:
     """Сценарий risk-only."""
-    result = await run_query("Оцени риск портфеля demo_portfolio")
+    result = await run_query(
+        "Оцени риск портфеля demo_portfolio",
+        scenario_name="risk_only",
+        expected_servers={"analytics"},
+    )
     assert result["final_answer"]
+    assert "calculate_risk_metrics" in result["portfolio_metrics"]
+    assert result["quality_metrics"]["tool_selection_correct"] is True
 
 
 @pytest.mark.asyncio
-async def test_e2e_complex() -> None:
-    """Комплексный сценарий с несколькими серверами."""
-    result = await run_query("Оцени портфель demo_portfolio с учетом новостей по GAZP и котировки SBER")
+async def test_e2e_stress_imoex_minus_20() -> None:
+    """Сценарий стресс-теста IMOEX -20% из ТЗ."""
+    result = await run_query(
+        "Проведи стресс-тест портфеля demo_portfolio при падении IMOEX на 20%",
+        scenario_name="stress_imoex_minus_20",
+        expected_servers={"analytics"},
+    )
     assert result["final_answer"]
+    stress = result["portfolio_metrics"]["run_stress_test"]
+    assert stress["scenario"] == "index_drop"
+    assert stress["total_loss_rub"] > 0
+    assert result["quality_metrics"]["tool_selection_correct"] is True
+
+
+@pytest.mark.asyncio
+async def test_e2e_portfolio_with_oilgas_news() -> None:
+    """Комплексный сценарий портфель + новости нефтегаза из ТЗ."""
+    result = await run_query(
+        "Оцени риск портфеля demo_portfolio с учетом новостей нефтегаза и котировки GAZP",
+        scenario_name="portfolio_oilgas_news",
+        expected_servers={"market", "news", "analytics"},
+    )
+    assert result["final_answer"]
+    assert result["market_data"]
+    assert result["news_data"]
+    assert result["portfolio_metrics"]
+    assert result["quality_metrics"]["tool_selection_correct"] is True
 
 
 def test_cli_command_parsing_and_debug() -> None:
@@ -126,4 +167,35 @@ async def test_streamlit_handler_smoke(monkeypatch) -> None:
     )
     assert result["final_answer"] == "Ответ готов."
     assert any("UI model preference" in row for row in result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_e2e_degradation_when_news_unavailable(monkeypatch) -> None:
+    """Проверяет деградацию графа при недоступности news-инструмента."""
+
+    class MixedClient:
+        async def call_tool(self, tool_name, tool_args):
+            if tool_name == "fetch_news":
+                raise Exception("rss unavailable")
+            if tool_name == "get_stock_quote":
+                return {"SECID": tool_args["ticker"], "LAST": 300.0}
+            if tool_name == "calculate_risk_metrics":
+                return {"volatility": {"value_annual": 0.21}}
+            if tool_name == "get_portfolio_summary":
+                return {"portfolio_id": "demo_portfolio", "total_value": 99999.0}
+            return {}
+
+    mixed_client = MixedClient()
+    monkeypatch.setattr("orchestrator.nodes.market_executor.get_mcp_client", lambda: mixed_client)
+    monkeypatch.setattr("orchestrator.nodes.news_executor.get_mcp_client", lambda: mixed_client)
+    monkeypatch.setattr("orchestrator.nodes.analytics_executor.get_mcp_client", lambda: mixed_client)
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("orchestrator.nodes.market_executor.asyncio.sleep", _fake_sleep)
+
+    result = await run_query("Покажи котировку SBER, новости и оцени риск портфеля demo_portfolio")
+    assert result["final_answer"]
+    assert isinstance(result.get("error_count"), int)
 

@@ -195,8 +195,14 @@ def route_planner(state: dict[str, Any]) -> str:
 
 async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     """Генерирует план и выбирает следующий узел исполнения."""
+    settings = get_settings()
     plan = list(state.get("plan", []))
     current_step = int(state.get("current_step", 0))
+    if int(state.get("error_count", 0)) >= settings.max_error_count:
+        return {
+            "next_node": "summarizer",
+            "warnings": ["Достигнут лимит ошибок оркестратора, включена безопасная деградация."],
+        }
 
     if not plan:
         if current_step > 0:

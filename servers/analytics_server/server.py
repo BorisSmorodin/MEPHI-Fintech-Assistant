@@ -32,6 +32,15 @@ FORBIDDEN_SQL_KEYWORDS = (
     "ALTER",
     "TRUNCATE",
 )
+FORBIDDEN_SQL_EXPRESSION_TYPES: tuple[type[exp.Expression], ...] = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Drop,
+    exp.Create,
+    exp.Alter,
+    exp.Command,
+)
 
 
 def _get_client() -> AnalyticsDataClient:
@@ -180,12 +189,21 @@ def _validate_and_rewrite_select_query(query: str) -> str:
             raise ToolError("Разрешены только SELECT-запросы.")
 
     try:
-        expression = sqlglot.parse_one(query, read="clickhouse")
+        statements = sqlglot.parse(query, read="clickhouse")
     except Exception as error:
-        raise ToolError(f"Некорректный SQL-запрос: {error}") from error
+        log.warning("invalid_sql_query", error=str(error))
+        raise ToolError("Некорректный SQL-запрос.") from error
 
+    if len(statements) != 1:
+        raise ToolError("Разрешен только один SELECT-запрос.")
+
+    expression = statements[0]
     if not isinstance(expression, exp.Select):
         raise ToolError("Разрешены только SELECT-запросы.")
+
+    for node in expression.walk():
+        if isinstance(node, FORBIDDEN_SQL_EXPRESSION_TYPES):
+            raise ToolError("Разрешены только SELECT-запросы.")
 
     if expression.args.get("limit") is None:
         expression = expression.limit(1000)

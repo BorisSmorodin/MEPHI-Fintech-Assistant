@@ -6,7 +6,15 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from config.settings import get_settings
 from orchestrator.mcp_client import MCPClientError, get_mcp_client
+
+ALLOWED_NEWS_TOOLS = {
+    "fetch_news",
+    "get_cb_key_rate",
+    "get_market_sentiment",
+    "get_macro_calendar",
+}
 
 
 async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
@@ -22,6 +30,15 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
 
     tool_name = str(step.get("tool_name", ""))
     tool_args = dict(step.get("tool_args", {}))
+    settings = get_settings()
+    if tool_name not in ALLOWED_NEWS_TOOLS:
+        return {
+            "error_count": int(state.get("error_count", 0)) + 1,
+            "current_step": current_step + 1,
+            "warnings": [f"Отклонен неразрешенный news tool: {tool_name}"],
+            "messages": [AIMessage(content=f"Отклонен неразрешенный news tool: {tool_name}")],
+        }
+
     client = get_mcp_client()
 
     try:
@@ -39,7 +56,7 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
     except MCPClientError as error:
         new_error_count = int(state.get("error_count", 0)) + 1
         warnings = list(state.get("warnings", []))
-        if new_error_count >= 3:
+        if new_error_count >= settings.max_error_count:
             warnings.append("news_server временно недоступен, продолжаем без части новостей.")
             return {
                 "warnings": warnings,
@@ -55,7 +72,7 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
     except Exception as error:
         new_error_count = int(state.get("error_count", 0)) + 1
         warnings = list(state.get("warnings", []))
-        if new_error_count >= 3:
+        if new_error_count >= settings.max_error_count:
             warnings.append("news_server временно недоступен, продолжаем без части новостей.")
             return {
                 "warnings": warnings,

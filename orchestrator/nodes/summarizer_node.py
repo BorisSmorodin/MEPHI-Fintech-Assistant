@@ -7,10 +7,35 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 
+def _escape_untrusted_text(value: str) -> str:
+    """Экранирует потенциально опасные символы из недоверенного контента."""
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("{", "&#123;")
+        .replace("}", "&#125;")
+    )
+
+
+def _sanitize_news_rows(news_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Санитизирует текстовые поля новостей перед использованием в промптах/ответах."""
+    sanitized_rows: list[dict[str, Any]] = []
+    for row in news_data:
+        sanitized_row: dict[str, Any] = {}
+        for key, value in row.items():
+            if isinstance(value, str):
+                sanitized_row[key] = _escape_untrusted_text(value)
+            else:
+                sanitized_row[key] = value
+        sanitized_rows.append(sanitized_row)
+    return sanitized_rows
+
+
 def _format_summary(state: dict[str, Any]) -> str:
     """Формирует структурированный итоговый ответ без внешних вызовов."""
     market_data = dict(state.get("market_data", {}))
-    news_data = list(state.get("news_data", []))
+    news_data = _sanitize_news_rows(list(state.get("news_data", [])))
     portfolio_metrics = dict(state.get("portfolio_metrics", {}))
     warnings = list(state.get("warnings", []))
 

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import requests
+from fastmcp.exceptions import ToolError
 
 from config.settings import Settings
 from servers.news_server.rss_fetcher import NEWS_SOURCES, NewsFetcher, NewsFetchError
@@ -197,4 +198,13 @@ async def test_news_server_tools_smoke(monkeypatch) -> None:
     macro = await get_macro_calendar("2026-01-01", "2026-12-31")
     assert isinstance(macro, list)
     assert len(macro) >= 1
+
+
+@pytest.mark.asyncio
+async def test_news_tools_validate_inputs() -> None:
+    """Проверяет негативные сценарии валидации news-инструментов."""
+    with pytest.raises(ToolError):
+        await fetch_news("   ")
+    with pytest.raises(ToolError):
+        await get_macro_calendar("2026-10-01", "2026-01-01")
 
