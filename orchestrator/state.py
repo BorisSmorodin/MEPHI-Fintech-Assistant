@@ -6,7 +6,13 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph.message import add_messages
 
-QueryType = Literal["market_monitor", "news_analysis", "risk_assessment", "complex"]
+QueryType = Literal[
+    "market_monitor",
+    "news_analysis",
+    "risk_assessment",
+    "portfolio_holdings",
+    "complex",
+]
 ExecutorTarget = Literal["market_executor", "news_executor", "analytics_executor", "summarizer"]
 
 

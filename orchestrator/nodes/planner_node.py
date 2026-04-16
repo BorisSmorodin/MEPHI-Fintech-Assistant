@@ -235,6 +235,7 @@ def _sanitize_plan_steps(
     steps: list[dict[str, Any]],
     user_query: str,
     extracted_tickers: list[str],
+    query_type: str = "complex",
 ) -> list[dict[str, Any]]:
     """Применяет post-validation для шагов плана после LLM/fallback."""
     sanitized: list[dict[str, Any]] = []
@@ -289,6 +290,39 @@ def _sanitize_plan_steps(
                 steps_after=len(sanitized),
             )
 
+    if query_type == "portfolio_holdings":
+        before_ph = len(sanitized)
+        sanitized = [
+            step
+            for step in sanitized
+            if str(step.get("tool_name", "")) not in {"calculate_risk_metrics", "run_stress_test"}
+        ]
+        if len(sanitized) < before_ph:
+            log.info(
+                "planner_stripped_risk_tools_for_holdings_query",
+                user_query_preview=user_query[:120],
+                steps_before=before_ph,
+                steps_after=len(sanitized),
+            )
+        has_summary = any(str(step.get("tool_name", "")) == "get_portfolio_summary" for step in sanitized)
+        if not has_summary:
+            pid = _detect_portfolio_id(user_query)
+            summary_args = _normalize_analytics_tool_args(
+                tool_name="get_portfolio_summary",
+                tool_args={"portfolio_id": pid},
+                user_query=user_query,
+            )
+            sanitized.insert(
+                0,
+                {
+                    "step_number": 0,
+                    "description": "Получить сводку портфеля (позиции, веса).",
+                    "target_server": "analytics_executor",
+                    "tool_name": "get_portfolio_summary",
+                    "tool_args": summary_args,
+                },
+            )
+
     if not sanitized or sanitized[-1].get("target_server") != "summarizer":
         sanitized.append(
             {
@@ -320,6 +354,28 @@ def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
 
     steps: list[PlanStepModel] = []
     step_counter = 1
+
+    if query_type == "portfolio_holdings":
+        steps.append(
+            PlanStepModel(
+                step_number=step_counter,
+                description="Получить сводку портфеля (позиции, веса).",
+                target_server="analytics_executor",
+                tool_name="get_portfolio_summary",
+                tool_args={"portfolio_id": portfolio_id},
+            )
+        )
+        step_counter += 1
+        steps.append(
+            PlanStepModel(
+                step_number=step_counter,
+                description="Суммаризировать результаты.",
+                target_server="summarizer",
+                tool_name="summarize",
+                tool_args={},
+            )
+        )
+        return PlanSchema(steps=steps, reasoning="План: только состав портфеля (без риск-метрик).")
 
     if query_type in {"market_monitor", "complex"}:
         if "индекс" in query.lower() or "imoex" in query.lower() or "rtsi" in query.lower():
@@ -372,6 +428,18 @@ def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
                 )
             )
             step_counter += 1
+
+    if query_type == "risk_assessment":
+        steps.append(
+            PlanStepModel(
+                step_number=step_counter,
+                description="Получить сводку портфеля (позиции).",
+                target_server="analytics_executor",
+                tool_name="get_portfolio_summary",
+                tool_args={"portfolio_id": portfolio_id},
+            )
+        )
+        step_counter += 1
 
     if query_type in {"risk_assessment", "complex"}:
         skip_analytics_for_ticker_investment = (
@@ -508,6 +576,7 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
             steps=normalized_plan,
             user_query=str(state.get("user_query", "")),
             extracted_tickers=list(state.get("extracted_tickers", [])),
+            query_type=str(state.get("query_type", "complex")),
         )
         if len(normalized_plan) > 10:
             normalized_plan = normalized_plan[:10]

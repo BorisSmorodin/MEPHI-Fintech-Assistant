@@ -242,6 +242,44 @@ def _extract_news_lines(news_data: list[dict[str, Any]], *, limit: int = 5) -> l
     return lines
 
 
+def _extract_portfolio_holdings_lines(portfolio_metrics: dict[str, Any]) -> list[str]:
+    """Возвращает строки по get_portfolio_summary: позиции, веса, сектора."""
+    payload = _find_payload_dict(portfolio_metrics.get("get_portfolio_summary"))
+    if not isinstance(payload, dict):
+        return []
+    lines: list[str] = []
+    pid = _escape_untrusted_text(str(payload.get("portfolio_id", "портфель")))
+    total_val = _as_float(payload.get("total_value"))
+    total_fmt = _format_float(total_val, suffix=" RUB")
+    lines.append(f"- Портфель {pid}: суммарная оценка позиций {total_fmt}.")
+
+    positions = payload.get("positions")
+    if isinstance(positions, list):
+        for row in positions[:25]:
+            if not isinstance(row, dict):
+                continue
+            ticker = _escape_untrusted_text(str(row.get("ticker", "?")))
+            weight = _as_float(row.get("weight"))
+            weight_fmt = _format_float(weight, suffix="%", scale=100.0) if weight is not None else "н/д"
+            mv = _format_float(_as_float(row.get("market_value")), suffix=" RUB")
+            sector = _escape_untrusted_text(str(row.get("sector", "н/д")))
+            itype = _escape_untrusted_text(str(row.get("instrument_type", "н/д")))
+            lines.append(
+                f"- {ticker} ({itype}, {sector}): доля {weight_fmt}, оценка {mv}."
+            )
+
+    allocation = payload.get("allocation")
+    if isinstance(allocation, dict):
+        by_sector = allocation.get("by_sector")
+        if isinstance(by_sector, dict) and by_sector:
+            parts = [
+                f"{_escape_untrusted_text(str(k))}: {_format_float(_as_float(v), suffix=' RUB')}"
+                for k, v in list(by_sector.items())[:12]
+            ]
+            lines.append("- По секторам (руб.): " + "; ".join(parts) + ".")
+    return lines
+
+
 def _extract_risk_lines(portfolio_metrics: dict[str, Any]) -> list[str]:
     """Возвращает риск-метрики и стресс-факты в читаемом виде."""
     lines: list[str] = []
@@ -564,6 +602,7 @@ def _build_interpretation(
     has_market: bool,
     has_news: bool,
     has_risk: bool,
+    has_holdings: bool,
     has_quote: bool,
     has_candles: bool,
     investment_decision_intent: bool,
@@ -611,7 +650,17 @@ def _build_interpretation(
         return (
             "Новостной фон разобран по заголовкам и источникам; при оценке материальности опирайтесь на дату и качество источника."
         )
+    if query_type == "portfolio_holdings":
+        if has_holdings:
+            return (
+                "Состав отражает позиции и веса по данным учёта; оценивайте концентрацию по бумагам и секторам в контексте целевых долей и лимитов."
+            )
+        return "Сводка портфеля запрошена, но данные по позициям в ответе не найдены."
     if query_type == "risk_assessment":
+        if has_holdings and not has_risk:
+            return (
+                "В ответ включена сводка по позициям портфеля; готовые метрики VaR/стресс в текущем наборе данных отсутствуют или не запрашивались."
+            )
         return (
             "Запрос относится к устойчивости портфеля; в данных не найдено готовых метрик риска или стресс-результата для развёрнутой интерпретации."
         )
@@ -620,7 +669,7 @@ def _build_interpretation(
             "Запрос обработан как комплексный: сочетаются рыночные факты, новости и блок риска. "
             "Такой срез лучше отражает взаимосвязь цены, информационного фона и ограничений по риску."
         )
-    if has_market or has_news or has_risk or has_candles:
+    if has_market or has_news or has_risk or has_candles or has_holdings:
         return _describe_available_and_missing_blocks(
             has_quote=has_quote,
             has_candles=has_candles,
@@ -698,6 +747,10 @@ def _build_conclusion(
         lines.append(
             "- Отфильтруйте заголовки по дате и доверию источника; подтвердите факты первичными документами (отчёт, пресс-релиз, регулятор)."
         )
+    elif query_type == "portfolio_holdings":
+        lines.append(
+            "- Сверяйте доли и сектора с целевым профилем и лимитами концентрации в вашей политике."
+        )
     elif query_type == "risk_assessment" and has_risk_lines:
         lines.append("- Сверьте риск-метрики с внутренними лимитами и стресс-сценариями, зафиксированными в вашей политике.")
     elif query_type == "complex" and (has_market or has_news or has_risk_lines):
@@ -729,10 +782,12 @@ def _format_summary(state: dict[str, Any]) -> str:
 
     market_lines = _extract_market_lines(market_data)
     news_lines = _extract_news_lines(news_data)
+    holdings_lines = _extract_portfolio_holdings_lines(portfolio_metrics)
     risk_lines = _extract_risk_lines(portfolio_metrics)
 
     has_market = bool(market_lines)
     has_news = bool(news_lines)
+    has_holdings = bool(holdings_lines)
     has_risk = bool(risk_lines)
     quote_payload = _find_payload_dict(market_data.get("get_stock_quote"))
     has_quote = isinstance(quote_payload, dict)
@@ -743,6 +798,7 @@ def _format_summary(state: dict[str, Any]) -> str:
         has_market=has_market,
         has_news=has_news,
         has_risk=has_risk,
+        has_holdings=has_holdings,
         has_quote=has_quote,
         has_candles=has_candles_data,
         investment_decision_intent=investment_decision_intent,
@@ -765,9 +821,11 @@ def _format_summary(state: dict[str, Any]) -> str:
         lines.extend(market_lines)
     if has_news:
         lines.extend(news_lines)
+    if has_holdings:
+        lines.extend(holdings_lines)
     if has_risk:
         lines.extend(risk_lines)
-    if not (has_market or has_news or has_risk):
+    if not (has_market or has_news or has_holdings or has_risk):
         lines.append("- Недостаточно данных для содержательного ответа по запросу.")
 
     lines.extend(["", "### Интерпретация", interpretation])

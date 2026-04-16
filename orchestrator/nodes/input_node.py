@@ -17,6 +17,30 @@ MARKET_KEYWORDS = {"котиров", "объём", "объем", "торг", "к
 NEWS_KEYWORDS = {"новост", "событ", "объявл", "ставк", "цб", "влияни"}
 RISK_KEYWORDS = {"риск", "портфел", "var", "просад", "диверсификац", "стресс"}
 STRESS_KEYWORDS = {"стресс", "stress", "сценар", "шок", "паден"}
+# Контекст портфеля без импорта planner_node (избегаем циклических зависимостей).
+_PORTFOLIO_WORD_RE = re.compile(r"\b[\w-]*portfolio[\w-]*\b", re.IGNORECASE)
+_PORTFOLIO_ID_RE = re.compile(r"\b[\w]+_portfolio\b", re.IGNORECASE)
+# Намерение «состав / позиции» (до обобщающего «портфел» → risk_assessment).
+_PORTFOLIO_COMPOSITION_HINTS = (
+    "состав",
+    "позици",
+    "holdings",
+    "какие бумаги",
+    "что в портфел",
+    "перечисли актив",
+    "доли по бумагам",
+    "что у меня в портфел",
+    "бумаг в портфел",
+)
+# Явный запрос риск-метрик одновременно с составом → complex.
+_PORTFOLIO_RISK_FOCUS_HINTS = (
+    "риск",
+    "стресс",
+    "cvar",
+    "волатильн",
+    "шарп",
+    "просадк",
+)
 _INVESTMENT_DECISION_PATTERNS = (
     re.compile(r"стоит\s+ли\s+(купить|продавать|покупать|продать)", re.IGNORECASE),
     re.compile(r"(купить|продать|покупать|продавать)\s+ли\b", re.IGNORECASE),
@@ -77,6 +101,20 @@ def _classify_query_type(query: str) -> QueryType:
         return "risk_assessment"
     if has_percentage and has_index_reference:
         return "risk_assessment"
+
+    has_portfolio_context = (
+        "портфел" in lowered
+        or _PORTFOLIO_WORD_RE.search(query) is not None
+        or _PORTFOLIO_ID_RE.search(query) is not None
+    )
+    has_composition_intent = any(hint in lowered for hint in _PORTFOLIO_COMPOSITION_HINTS)
+    has_risk_focus = any(hint in lowered for hint in _PORTFOLIO_RISK_FOCUS_HINTS) or bool(
+        re.search(r"\bvar\b", lowered)
+    )
+    if has_portfolio_context and has_composition_intent:
+        if has_risk_focus:
+            return "complex"
+        return "portfolio_holdings"
 
     matches = 0
     query_type: QueryType = "complex"

@@ -36,6 +36,15 @@ async def test_input_node_validation_and_classification() -> None:
     stress_result = await input_node({"user_query": "Проведи сценарий падения IMOEX на 20%"})
     assert stress_result["query_type"] == "risk_assessment"
 
+    holdings = await input_node({"user_query": "Опиши состав портфеля demo_portfolio"})
+    assert holdings["query_type"] == "portfolio_holdings"
+
+    risk_only = await input_node({"user_query": "Оцени риск портфеля demo_portfolio"})
+    assert risk_only["query_type"] == "risk_assessment"
+
+    mixed = await input_node({"user_query": "Состав и VaR портфеля demo_portfolio"})
+    assert mixed["query_type"] == "complex"
+
 
 @pytest.mark.asyncio
 async def test_planner_routing(monkeypatch) -> None:
@@ -71,8 +80,57 @@ async def test_planner_routing_news_and_risk(monkeypatch) -> None:
     stress_state["extracted_tickers"] = ["IMOEX"]
     stress_result = await planner_node(stress_state)
     assert stress_result["next_node"] == "analytics_executor"
-    assert stress_result["plan"][0]["tool_name"] == "run_stress_test"
-    assert "portfolio_id" in stress_result["plan"][0]["tool_args"]
+    assert stress_result["plan"][0]["tool_name"] == "get_portfolio_summary"
+    assert stress_result["plan"][1]["tool_name"] == "run_stress_test"
+    assert "portfolio_id" in stress_result["plan"][1]["tool_args"]
+
+
+@pytest.mark.asyncio
+async def test_planner_fallback_portfolio_holdings_minimal_plan(monkeypatch) -> None:
+    """Для portfolio_holdings только get_portfolio_summary и summarizer."""
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: None)
+    state = initial_state("Перечисли позиции в портфеле demo_portfolio")
+    state["query_type"] = "portfolio_holdings"
+    result = await planner_node(state)
+    tools = [step["tool_name"] for step in result["plan"]]
+    assert tools == ["get_portfolio_summary", "summarize"]
+    assert "calculate_risk_metrics" not in tools
+    assert "run_stress_test" not in tools
+
+
+def test_sanitize_plan_strips_risk_tools_for_portfolio_holdings() -> None:
+    """LLM-план с риск-инструментами режется для portfolio_holdings."""
+    raw = [
+        {
+            "step_number": 1,
+            "description": "summary",
+            "target_server": "analytics_executor",
+            "tool_name": "get_portfolio_summary",
+            "tool_args": {"portfolio_id": "demo_portfolio"},
+        },
+        {
+            "step_number": 2,
+            "description": "risk",
+            "target_server": "analytics_executor",
+            "tool_name": "calculate_risk_metrics",
+            "tool_args": {"portfolio_id": "demo_portfolio"},
+        },
+        {
+            "step_number": 3,
+            "description": "sum",
+            "target_server": "summarizer",
+            "tool_name": "summarize",
+            "tool_args": {},
+        },
+    ]
+    out = _sanitize_plan_steps(
+        steps=raw,
+        user_query="состав портфеля demo_portfolio",
+        extracted_tickers=[],
+        query_type="portfolio_holdings",
+    )
+    assert [s["tool_name"] for s in out[:-1]] == ["get_portfolio_summary"]
+    assert out[-1]["tool_name"] == "summarize"
 
 
 def test_route_planner_defaults_to_summarizer() -> None:
@@ -667,6 +725,34 @@ def test_collect_quality_metrics_investment_intent_does_not_require_analytics() 
     )
     assert record["tool_selection_correct"] is True
     assert set(record["expected_servers"]) == {"market", "news"}
+
+
+@pytest.mark.asyncio
+async def test_summarizer_portfolio_holdings_lines() -> None:
+    """Блок основных показателей включает позиции из get_portfolio_summary."""
+    state = initial_state("Состав портфеля demo_portfolio")
+    state["query_type"] = "portfolio_holdings"
+    state["portfolio_metrics"] = {
+        "get_portfolio_summary": {
+            "portfolio_id": "demo_portfolio",
+            "total_value": 1_000_000.0,
+            "positions": [
+                {
+                    "ticker": "SBER",
+                    "weight": 0.25,
+                    "market_value": 250_000.0,
+                    "sector": "Финансы",
+                    "instrument_type": "акция",
+                }
+            ],
+            "allocation": {"by_sector": {"Финансы": 250_000.0}},
+        }
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "SBER" in text
+    assert "demo_portfolio" in text
+    assert "Состав отражает позиции" in text or "позиц" in text
 
 
 @pytest.mark.asyncio
