@@ -66,6 +66,14 @@ def _planned_servers_from_full_plan(state: dict[str, Any]) -> set[str]:
     return planned_servers
 
 
+def _estimate_tokens_from_text(text: str) -> int:
+    """Грубая оценка числа токенов по длине текста (как в ReAct при отсутствии usage)."""
+    normalized = text.strip()
+    if not normalized:
+        return 0
+    return max(1, len(normalized) // 4)
+
+
 def _estimate_mcp_calls_count(state: dict[str, Any]) -> int:
     """Оценивает число MCP-вызовов по текущему плану и шагам."""
     plan = list(state.get("plan", []))
@@ -95,6 +103,17 @@ def collect_quality_metrics(
     tool_selection_correct = normalized_expected.issubset(observed_servers)
     tool_selection_correct_full_plan = normalized_expected.issubset(planned_servers)
 
+    prompt_t = int(state.get("planner_prompt_tokens", 0))
+    completion_t = int(state.get("planner_completion_tokens", 0))
+    total_t = int(state.get("planner_total_tokens", 0))
+    planner_tokens_estimated = bool(state.get("planner_tokens_estimated", False))
+
+    if prompt_t <= 0 and completion_t <= 0 and total_t <= 0:
+        prompt_t = _estimate_tokens_from_text(user_query)
+        completion_t = _estimate_tokens_from_text(str(state.get("final_answer") or ""))
+        total_t = prompt_t + completion_t
+        planner_tokens_estimated = True
+
     record = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "scenario_name": scenario_name,
@@ -113,6 +132,14 @@ def collect_quality_metrics(
         "plan_contract_ok": bool(state.get("plan_contract_ok", True)),
         "plan_repaired": bool(state.get("plan_repaired", False)),
         "routing_failure_reason": str(state.get("routing_failure_reason", "none")),
+        "planner_prompt_tokens": prompt_t,
+        "planner_completion_tokens": completion_t,
+        "planner_total_tokens": total_t,
+        "planner_tokens_estimated": planner_tokens_estimated,
+        "tokens_prompt": prompt_t,
+        "tokens_completion": completion_t,
+        "tokens_total": total_t,
+        "tokens_estimated": planner_tokens_estimated,
     }
     log.info("quality_metrics_collected", **record)
     return record
@@ -140,6 +167,8 @@ def build_quality_metrics_report(metrics_path: str) -> dict[str, Any]:
             "avg_response_time_sec": 0.0,
             "avg_mcp_calls_count": 0.0,
             "avg_error_count_final": 0.0,
+            "avg_planner_total_tokens": 0.0,
+            "estimated_tokens_share": 0.0,
         }
 
     records: list[dict[str, Any]] = []
@@ -159,6 +188,8 @@ def build_quality_metrics_report(metrics_path: str) -> dict[str, Any]:
             "avg_response_time_sec": 0.0,
             "avg_mcp_calls_count": 0.0,
             "avg_error_count_final": 0.0,
+            "avg_planner_total_tokens": 0.0,
+            "estimated_tokens_share": 0.0,
         }
 
     scenario_success_rate = mean(1.0 if row.get("scenario_success") else 0.0 for row in records)
@@ -166,6 +197,8 @@ def build_quality_metrics_report(metrics_path: str) -> dict[str, Any]:
     avg_response_time = mean(float(row.get("response_time_sec", 0.0)) for row in records)
     avg_mcp_calls = mean(int(row.get("mcp_calls_count", 0)) for row in records)
     avg_errors = mean(int(row.get("error_count_final", 0)) for row in records)
+    avg_tokens = mean(int(row.get("planner_total_tokens", 0)) for row in records)
+    estimated_share = mean(1.0 if row.get("planner_tokens_estimated") else 0.0 for row in records)
 
     return {
         "metrics_path": str(path),
@@ -175,4 +208,6 @@ def build_quality_metrics_report(metrics_path: str) -> dict[str, Any]:
         "avg_response_time_sec": round(avg_response_time, 6),
         "avg_mcp_calls_count": round(avg_mcp_calls, 6),
         "avg_error_count_final": round(avg_errors, 6),
+        "avg_planner_total_tokens": round(avg_tokens, 6),
+        "estimated_tokens_share": round(estimated_share, 6),
     }

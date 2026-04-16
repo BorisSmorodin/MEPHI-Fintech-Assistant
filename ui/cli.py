@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any
 
 import structlog
 import typer
 
 from orchestrator.graph import run_query
+from ui.benchmark_catalog import DEFAULT_BENCHMARK_MODELS, DEFAULT_BENCHMARK_SCENARIOS
+from ui.benchmark_runner import build_benchmark_summary_from_file, run_benchmark_matrix
 
 log = structlog.get_logger()
 app = typer.Typer(help="Консольный интерфейс Investment Assistant.")
@@ -267,6 +270,105 @@ def react_e2e(
         except Exception as error:
             log.error("cli_react_failed", error=str(error))
             typer.echo(f"Ошибка ReAct: {error}")
+
+
+@app.command("benchmark-models")
+def benchmark_models(
+    output_path: Annotated[
+        str,
+        typer.Option(
+            "--output-path",
+            help="Куда писать подробные JSONL-записи benchmark.",
+        ),
+    ] = "data/fixtures/benchmark_metrics.jsonl",
+    summary_path: Annotated[
+        str | None,
+        typer.Option(
+            "--summary-path",
+            help="Опционально: путь для JSON summary отчёта.",
+        ),
+    ] = None,
+    system: Annotated[
+        str,
+        typer.Option(
+            "--system",
+            help="Какие системы запускать: both | orchestrator | react.",
+        ),
+    ] = "both",
+    model: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--model",
+            help="Явный список моделей; можно передавать опцию несколько раз.",
+        ),
+    ] = None,
+    limit_models: Annotated[
+        int | None,
+        typer.Option("--limit-models", help="Ограничить число моделей из списка."),
+    ] = None,
+    limit_scenarios: Annotated[
+        int | None,
+        typer.Option("--limit-scenarios", help="Ограничить число сценариев из каталога."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Только показать матрицу запуска без выполнения."),
+    ] = False,
+) -> None:
+    """Массовый прогон model x scenario x system с метриками latency/tools/errors/tokens."""
+    normalized_system = system.strip().lower()
+    if normalized_system not in {"both", "orchestrator", "react"}:
+        typer.echo("Некорректный --system. Ожидается both, orchestrator или react.")
+        raise typer.Exit(code=1)
+    systems = (
+        ["orchestrator", "react"]
+        if normalized_system == "both"
+        else [normalized_system]
+    )
+
+    model_list = list(model or DEFAULT_BENCHMARK_MODELS)
+    if limit_models is not None and limit_models >= 0:
+        model_list = model_list[:limit_models]
+    if not model_list:
+        typer.echo("Список моделей пуст. Передайте --model или уберите ограничение.")
+        raise typer.Exit(code=1)
+
+    scenarios = list(DEFAULT_BENCHMARK_SCENARIOS)
+    if limit_scenarios is not None and limit_scenarios >= 0:
+        scenarios = scenarios[:limit_scenarios]
+    if not scenarios:
+        typer.echo("Список сценариев пуст.")
+        raise typer.Exit(code=1)
+
+    total_runs = len(model_list) * len(scenarios) * len(systems)
+    typer.echo(
+        f"Benchmark plan: models={len(model_list)}, scenarios={len(scenarios)}, "
+        f"systems={len(systems)}, runs={total_runs}"
+    )
+    if dry_run:
+        typer.echo("Dry-run завершён: запуск не выполнялся.")
+        return
+
+    try:
+        asyncio.run(
+            run_benchmark_matrix(
+                models=model_list,
+                scenarios=scenarios,
+                systems=systems,
+                output_path=output_path,
+            )
+        )
+        summary = build_benchmark_summary_from_file(output_path)
+        typer.echo(json.dumps(summary, ensure_ascii=False, indent=2))
+        if summary_path:
+            destination = Path(summary_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            typer.echo(f"Summary written: {summary_path}")
+    except Exception as error:
+        log.error("cli_benchmark_failed", error=str(error))
+        typer.echo(f"Ошибка benchmark: {error}")
+        raise typer.Exit(code=1) from error
 
 
 if __name__ == "__main__":

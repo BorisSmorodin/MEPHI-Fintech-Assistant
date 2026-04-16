@@ -120,3 +120,48 @@ def test_react_repl_debug_and_clear(monkeypatch) -> None:
     assert "tool_trace steps: 1" in joined
     assert "Контекст ReAct очищен." in joined
     assert "Завершение сессии ReAct." in joined
+
+
+def test_benchmark_models_dry_run(monkeypatch) -> None:
+    """Dry-run benchmark не должен запускать матрицу."""
+    output: list[str] = []
+    called = {"run": False}
+
+    async def _fake_run_matrix(**_kwargs):
+        called["run"] = True
+        return []
+
+    monkeypatch.setattr(cli, "run_benchmark_matrix", _fake_run_matrix)
+    monkeypatch.setattr(cli.typer, "echo", lambda m: output.append(str(m)))
+
+    cli.benchmark_models(dry_run=True, limit_models=1, limit_scenarios=1)
+
+    assert called["run"] is False
+    assert any("Dry-run" in row for row in output)
+
+
+def test_benchmark_models_executes_and_prints_summary(monkeypatch, tmp_path) -> None:
+    """Проверяет успешный проход benchmark-команды с моками."""
+    output: list[str] = []
+
+    async def _fake_run_matrix(**_kwargs):
+        return [{"system": "orchestrator"}]
+
+    def _fake_summary(_path: str) -> dict[str, Any]:
+        return {"records_count": 1, "by_system": {"orchestrator": {"runs": 1}}}
+
+    monkeypatch.setattr(cli, "run_benchmark_matrix", _fake_run_matrix)
+    monkeypatch.setattr(cli, "build_benchmark_summary_from_file", _fake_summary)
+    monkeypatch.setattr(cli.typer, "echo", lambda m: output.append(str(m)))
+
+    summary_path = tmp_path / "summary.json"
+    cli.benchmark_models(
+        dry_run=False,
+        limit_models=1,
+        limit_scenarios=1,
+        output_path=str(tmp_path / "bench.jsonl"),
+        summary_path=str(summary_path),
+    )
+
+    assert summary_path.exists()
+    assert any('"records_count": 1' in row for row in output)

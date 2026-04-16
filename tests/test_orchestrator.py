@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from config.settings import get_settings
 from orchestrator.graph import run_query
 from orchestrator.nodes.analytics_executor import _normalize_analytics_tool_args, analytics_executor
 from orchestrator.nodes.input_node import (
@@ -20,6 +21,7 @@ from orchestrator.nodes.planner_node import (
     PlanSchema,
     PlanStepModel,
     _sanitize_plan_steps,
+    _try_llm_plan,
     infer_sector_decline_hint_from_user_query,
     planner_node,
     route_planner,
@@ -1084,6 +1086,39 @@ def test_collect_quality_metrics_investment_intent_does_not_require_analytics() 
     )
     assert record["tool_selection_correct"] is True
     assert set(record["expected_servers"]) == {"market", "news"}
+
+
+def test_try_llm_plan_retains_usage_when_json_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Невалидный JSON плана не должен сбрасывать usage (исключение раньше теряло токены в state)."""
+    from types import SimpleNamespace
+
+    import orchestrator.nodes.planner_node as planner_module
+
+    class FakeResponses:
+        def create(self, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                output_text='{"steps": broken',
+                usage=SimpleNamespace(
+                    input_tokens=400,
+                    output_tokens=200,
+                    total_tokens=600,
+                ),
+            )
+
+    class FakeOpenAI:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            self.responses = FakeResponses()
+
+    monkeypatch.setenv("YANDEX_CLOUD_API_KEY", "test-key")
+    monkeypatch.setenv("YANDEX_CLOUD_FOLDER", "test-folder")
+    get_settings.cache_clear()
+    monkeypatch.setattr(planner_module, "OpenAI", FakeOpenAI)
+
+    plan, usage = _try_llm_plan(
+        {"user_query": "x", "query_type": "complex", "extracted_tickers": []}
+    )
+    assert plan is None
+    assert int(usage.get("planner_total_tokens", 0)) == 600
 
 
 @pytest.mark.asyncio

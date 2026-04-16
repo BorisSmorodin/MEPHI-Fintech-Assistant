@@ -51,6 +51,10 @@ class InvestmentAssistantState(TypedDict):
     plan_contract_ok: NotRequired[bool]
     plan_repaired: NotRequired[bool]
     routing_failure_reason: NotRequired[str]
+    planner_prompt_tokens: NotRequired[int]
+    planner_completion_tokens: NotRequired[int]
+    planner_total_tokens: NotRequired[int]
+    planner_tokens_estimated: NotRequired[bool]
 
 
 def initial_state(user_query: str = "") -> InvestmentAssistantState:

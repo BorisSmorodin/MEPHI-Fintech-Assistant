@@ -10,9 +10,10 @@ from config.settings import Settings, get_settings
 def resolve_chat_model_name(settings: Settings) -> str:
     """Имя модели в формате, совместимом с Yandex Cloud OpenAI-compatible chat API."""
     if settings.yandex_cloud_folder:
-        base = (settings.llm_model or settings.yandex_cloud_model).strip()
+        # Для массовых прогонов меняем только YANDEX_CLOUD_MODEL, поэтому он приоритетнее.
+        base = (settings.yandex_cloud_model or settings.llm_model).strip()
         return f"gpt://{settings.yandex_cloud_folder}/{base}"
-    return (settings.llm_model or settings.yandex_cloud_model).strip()
+    return (settings.yandex_cloud_model or settings.llm_model).strip()
 
 
 def build_chat_model(settings: Settings | None = None) -> ChatOpenAI:
@@ -21,7 +22,7 @@ def build_chat_model(settings: Settings | None = None) -> ChatOpenAI:
     if not cfg.yandex_cloud_api_key.strip():
         msg = "Для ReAct-агента нужен YANDEX_CLOUD_API_KEY в окружении или .env."
         raise RuntimeError(msg)
-    if not (cfg.llm_model or cfg.yandex_cloud_model).strip():
+    if not (cfg.yandex_cloud_model or cfg.llm_model).strip():
         msg = "Укажите LLM_MODEL или YANDEX_CLOUD_MODEL."
         raise RuntimeError(msg)
     model_name = resolve_chat_model_name(cfg)

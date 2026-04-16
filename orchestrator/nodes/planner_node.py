@@ -8,7 +8,7 @@ import re
 from typing import Any, Literal
 
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 import structlog
 
 from config.settings import get_settings
@@ -647,12 +647,73 @@ def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
     return PlanSchema(steps=steps, reasoning="План сформирован детерминированными правилами.")
 
 
-def _try_llm_plan(state: dict[str, Any]) -> PlanSchema | None:
+def _estimate_tokens_from_text(text: str) -> int:
+    """Грубая оценка числа токенов по длине текста."""
+    normalized = text.strip()
+    if not normalized:
+        return 0
+    return max(1, len(normalized) // 4)
+
+
+def _extract_planner_token_usage(
+    response: Any,
+    *,
+    prompt_input: str,
+    output_text: str,
+) -> dict[str, Any]:
+    """Извлекает usage из ответа провайдера или оценивает токены при отсутствии usage."""
+    usage = getattr(response, "usage", None)
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    estimated = False
+
+    if usage is not None:
+        if isinstance(usage, dict):
+            prompt_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
+            completion_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
+            total_tokens = int(usage.get("total_tokens", 0) or 0)
+        else:
+            prompt_tokens = int(
+                getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)) or 0
+            )
+            completion_tokens = int(
+                getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)) or 0
+            )
+            total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+        if total_tokens <= 0:
+            total_tokens = prompt_tokens + completion_tokens
+
+    if prompt_tokens <= 0 and completion_tokens <= 0 and total_tokens <= 0:
+        prompt_tokens = _estimate_tokens_from_text(prompt_input)
+        completion_tokens = _estimate_tokens_from_text(output_text)
+        total_tokens = prompt_tokens + completion_tokens
+        estimated = True
+
+    return {
+        "planner_prompt_tokens": prompt_tokens,
+        "planner_completion_tokens": completion_tokens,
+        "planner_total_tokens": total_tokens,
+        "planner_tokens_estimated": estimated,
+    }
+
+
+def _empty_planner_usage() -> dict[str, Any]:
+    """Возвращает usage по умолчанию для случая без LLM-вызова."""
+    return {
+        "planner_prompt_tokens": 0,
+        "planner_completion_tokens": 0,
+        "planner_total_tokens": 0,
+        "planner_tokens_estimated": False,
+    }
+
+
+def _try_llm_plan(state: dict[str, Any]) -> tuple[PlanSchema | None, dict[str, Any]]:
     """Пытается получить structured plan через LLM."""
     settings = get_settings()
     if not settings.yandex_cloud_api_key or not settings.yandex_cloud_folder:
         log.info("planner_llm_disabled_missing_credentials")
-        return None
+        return None, _empty_planner_usage()
 
     client = OpenAI(
         api_key=settings.yandex_cloud_api_key,
@@ -675,13 +736,27 @@ def _try_llm_plan(state: dict[str, Any]) -> PlanSchema | None:
         input=prompt_input,
         max_output_tokens=1200,
     )
-    raw_text = response.output_text
-    if not raw_text:
+    raw_text = response.output_text or ""
+    planner_usage = _extract_planner_token_usage(
+        response,
+        prompt_input=prompt_input,
+        output_text=raw_text,
+    )
+    if not raw_text.strip():
         log.warning("planner_llm_empty_response")
-        return None
-    payload = json.loads(raw_text)
-    log.info("planner_llm_plan_received", steps_count=len(payload.get("steps", [])))
-    return PlanSchema.model_validate(payload)
+        return None, planner_usage
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        log.warning("planner_llm_json_invalid", error=str(exc))
+        return None, planner_usage
+    try:
+        plan = PlanSchema.model_validate(payload)
+    except ValidationError as exc:
+        log.warning("planner_llm_plan_validation_failed", error=str(exc))
+        return None, planner_usage
+    log.info("planner_llm_plan_received", steps_count=len(plan.steps))
+    return plan, planner_usage
 
 
 def route_planner(state: dict[str, Any]) -> str:
@@ -715,12 +790,17 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         if current_step > 0:
             return {"next_node": "summarizer"}
         llm_plan = None
+        planner_usage = _empty_planner_usage()
         llm_plan_used = False
         llm_plan_parse_failed = False
         planner_warnings: list[str] = []
         routing_failure_reason = "none"
         try:
-            llm_plan = _try_llm_plan(state)
+            llm_result = _try_llm_plan(state)
+            if isinstance(llm_result, tuple):
+                llm_plan, planner_usage = llm_result
+            else:
+                llm_plan = llm_result
             llm_plan_used = llm_plan is not None
         except Exception:
             llm_plan = None
@@ -768,6 +848,10 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
             "plan_contract_ok": plan_contract_ok,
             "plan_repaired": plan_repaired,
             "routing_failure_reason": routing_failure_reason,
+            "planner_prompt_tokens": int(planner_usage.get("planner_prompt_tokens", 0)),
+            "planner_completion_tokens": int(planner_usage.get("planner_completion_tokens", 0)),
+            "planner_total_tokens": int(planner_usage.get("planner_total_tokens", 0)),
+            "planner_tokens_estimated": bool(planner_usage.get("planner_tokens_estimated", False)),
         }
         if planner_warnings:
             merged_warnings = list(state.get("warnings", []))

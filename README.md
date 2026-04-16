@@ -67,6 +67,7 @@ asyncio.run(main())
   - или явно: `python -m ui.cli chat`
   - с управлением глубиной ответа: `python -m ui.cli chat --answer-depth auto|compact|standard`
   - ReAct-агент (e2e, сравнение с оркестратором): `python -m ui.cli react` или `python -m ui.cli react -q "..."`
+  - Массовый benchmark моделей (оркестратор/ReAct): `python -m ui.cli benchmark-models --system both`
 - Streamlit:
   - `streamlit run ui/streamlit_app.py`
 
