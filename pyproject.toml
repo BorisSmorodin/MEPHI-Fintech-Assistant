@@ -9,6 +9,7 @@ authors = [
     { name = "Boris Smorodin" },
 ]
 dependencies = [
+    "matplotlib>=3.8",
     "apimoex>=1.3",
     "clickhouse-connect>=0.7",
     "fastmcp>=2.0",

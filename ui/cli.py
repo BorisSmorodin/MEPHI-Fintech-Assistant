@@ -13,6 +13,7 @@ import typer
 
 from orchestrator.graph import run_query
 from ui.benchmark_catalog import DEFAULT_BENCHMARK_MODELS, DEFAULT_BENCHMARK_SCENARIOS
+from ui.benchmark_plots import render_benchmark_plots_from_file
 from ui.benchmark_runner import build_benchmark_summary_from_file, run_benchmark_matrix
 
 log = structlog.get_logger()
@@ -369,6 +370,37 @@ def benchmark_models(
         log.error("cli_benchmark_failed", error=str(error))
         typer.echo(f"Ошибка benchmark: {error}")
         raise typer.Exit(code=1) from error
+
+
+@app.command("benchmark-plots")
+def benchmark_plots(
+    metrics_path: Annotated[
+        str,
+        typer.Option(
+            "--metrics-path",
+            help="JSONL с записями benchmark (как у benchmark-models).",
+        ),
+    ] = "data/fixtures/benchmark_metrics.jsonl",
+    output_dir: Annotated[
+        str,
+        typer.Option(
+            "--output-dir",
+            help="Каталог для PNG (создаётся при необходимости).",
+        ),
+    ] = "data/fixtures/benchmark_plots",
+    dpi: Annotated[
+        int,
+        typer.Option("--dpi", help="Разрешение растровых PNG."),
+    ] = 120,
+) -> None:
+    """Строит графики по benchmark JSONL: latency, токены, успешность, heatmap."""
+    paths = render_benchmark_plots_from_file(metrics_path, output_dir, dpi=dpi)
+    if not paths:
+        typer.echo("Нет записей в файле или файл не найден — графики не созданы.")
+        raise typer.Exit(code=1)
+    typer.echo(f"Сохранено графиков: {len(paths)}")
+    for item in paths:
+        typer.echo(f"  {item}")
 
 
 if __name__ == "__main__":
