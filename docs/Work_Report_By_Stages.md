@@ -495,6 +495,54 @@
 
 ---
 
+## Дополнительная актуализация после этапов 5-9
+
+Выполнено:
+
+- Усилен `input_node`:
+  - уточнена классификация stress intent через regex-паттерны;
+  - добавлено различение sector stress, index stress и news/risk кейсов;
+  - введены `investment_decision_intent` и дополнительные hints для planner.
+- Существенно доработан `planner_node`:
+  - planner теперь работает по схеме `LLM -> fallback -> sanitize -> contract-check -> soft-repair`;
+  - нормализуются `portfolio_id`, индексные алиасы (`MOEX` -> `IMOEX`), magnitude и аргументы news/analytics;
+  - добавлены диагностические флаги качества планирования:
+    `llm_plan_used`, `llm_plan_parse_failed`, `plan_contract_ok`,
+    `plan_repaired`, `routing_failure_reason`.
+- Переписан planner system prompt:
+  - явно описаны `target_server`, разрешенные инструменты и их семантика;
+  - добавлены строгие аргументные контракты;
+  - добавлены anti-failure rules и few-shot примеры для сложных risk/stress кейсов.
+- Доработан `summarizer_node`:
+  - итоговый ответ формируется детерминированно, без runtime LLM;
+  - поддерживаются режимы глубины `compact` и `standard`;
+  - complex-ответы получили более компактную интерпретацию и группировку
+    блока "Основные показатели" по подзаголовкам;
+  - учтено поведение для `investment_decision_intent`.
+- Расширены quality metrics:
+  - помимо базовых метрик добавлены `expected_servers`, `planned_servers`,
+    `observed_servers`, `tool_selection_correct_full_plan` и planner-диагностика;
+  - улучшена наблюдаемость фактических MCP-вызовов и аргументов инструментов.
+- Расширен UI-слой:
+  - в `ui/cli.py` добавлена опция `--answer-depth auto|compact|standard`;
+  - в `ui/streamlit_app.py` добавлен аналогичный выбор глубины суммаризации;
+  - в `config/settings.py` и `.env.example` добавлен флаг
+    `SUMMARY_PREFER_COMPACT_FOR_COMPLEX`.
+- Обновлены тесты:
+  - усилены сценарии `tests/test_orchestrator.py` для planner sanitize/repair,
+    `portfolio_id` normalization и stress-классификации;
+  - синхронизированы тесты CLI;
+  - добавлены проверки структуры planner prompt.
+
+Результат:
+
+- Оркестрация стала заметно устойчивее к некачественным LLM-планам и
+  семантически неоднозначным запросам.
+- Клиентский ответ стал компактнее, понятнее для демо и лучше контролируется из UI.
+- Документация и диагностические метрики приведены в соответствие с текущим runtime-поведением.
+
+---
+
 ## Вывод
 
 - Этапы 0-9 реализованы: включая hardening по SQL/prompt injection/allowlist/degradation,

@@ -18,6 +18,8 @@ Runbook для воспроизводимого запуска Investment Assist
    - заполнить ключи и параметры.
 4. Установить зависимости:
    - `uv sync --group dev`
+5. При необходимости включить более компактные complex-ответы через `.env`:
+   - `SUMMARY_PREFER_COMPACT_FOR_COMPLEX=true`
 
 ## 3) Smoke-проверка окружения
 
@@ -37,6 +39,7 @@ Runbook для воспроизводимого запуска Investment Assist
 ### UI
 
 - CLI: `python -m ui.cli chat`
+- CLI с явной глубиной ответа: `python -m ui.cli chat --answer-depth auto|compact|standard`
 - Streamlit: `streamlit run ui/streamlit_app.py`
 
 ## 5) Dry-run результаты (Этап 9)
@@ -56,6 +59,11 @@ Dry-run выполнен в изолированном окружении `.venv
    - результат: корректный JSON-отчет сформирован.
 
 Итог dry-run: воспроизводимость запуска подтверждена, критических блокеров не выявлено.
+
+Примечание:
+
+- `answer_depth=auto` использует текущее поведение orchestrator/summarizer;
+- для complex-сценариев итоговая глубина может зависеть от `SUMMARY_PREFER_COMPACT_FOR_COMPLEX`.
 
 ## 6) Типовые проблемы и решения
 

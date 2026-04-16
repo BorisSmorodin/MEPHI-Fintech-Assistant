@@ -42,6 +42,8 @@
 
 - CLI:
   - `python -m ui.cli`
+  - или явно: `python -m ui.cli chat`
+  - с управлением глубиной ответа: `python -m ui.cli chat --answer-depth auto|compact|standard`
 - Streamlit:
   - `streamlit run ui/streamlit_app.py`
 
@@ -62,8 +64,8 @@
 
 ### 6) Диагностика запуска CLI/MCP
 
-- Ошибка `Got unexpected extra argument (chat)`:
-  - используйте `python -m ui.cli` (без `chat` в аргументах).
+- REPL CLI можно запускать как `python -m ui.cli`, так и `python -m ui.cli chat`.
+- Для ручного переключения глубины суммаризации используйте `--answer-depth auto|compact|standard`.
 - Ошибка `Failed to parse JSONRPC message from server`:
   - убедитесь, что MCP-сервисы не пишут служебные логи в `stdout`;
   - перезапустите CLI после обновления окружения/зависимостей.
@@ -93,6 +95,7 @@
 | `MAX_ERROR_COUNT`             | Опциональная                     | Лимит ошибок перед деградацией            | `3`                                   |
 | `MARKET_SERVER_TIMEOUT`       | Опциональная                     | Таймаут market API вызовов                | `30`                                  |
 | `NEWS_SERVER_CACHE_TTL`       | Опциональная                     | TTL кэша RSS                              | `300`                                 |
+| `SUMMARY_PREFER_COMPACT_FOR_COMPLEX` | Опциональная              | Предпочитать compact-ответы для complex   | `true`                                |
 | `QUALITY_METRICS_PATH`        | Опциональная                     | Путь к JSONL-метрикам                     | `data/fixtures/quality_metrics.jsonl` |
 | `QUALITY_METRICS_ENABLE_FILE` | Опциональная                     | Включение записи метрик в файл            | `false`                               |
 
@@ -102,6 +105,8 @@
 - MOEX ISS API публичный, данные могут поступать с задержкой.
 - Тональность новостей определяется эвристически, без отдельной ML/LLM-классификации.
 - Стресс-тесты и risk-метрики реализованы в упрощенной параметрической постановке.
+- Planner строит план через LLM, но использует fallback, sanitize и contract-repair для устойчивости к плохим LLM-ответам.
+- Summarizer формирует итоговый ответ детерминированно из `state`; глубина интерпретации может переключаться через `answer_depth`.
 - Система предназначена для учебно-исследовательских задач и не является инвестиционной рекомендацией.
 
 ## Полезные документы
