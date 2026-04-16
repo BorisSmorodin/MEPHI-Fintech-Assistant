@@ -584,6 +584,68 @@ async def test_summarizer_interpretation_risk_metrics_is_narrative_not_table_rep
 
 
 @pytest.mark.asyncio
+async def test_summarizer_complex_interpretation_links_risk_news_quote() -> None:
+    """Комплексный запрос: интерпретация связывает метрики риска, новости и котировку (не шаблон «три источника»)."""
+    state = initial_state(
+        "Оцени риск портфеля demo_portfolio с новостями нефтегаза и котировкой GAZP"
+    )
+    state["query_type"] = "complex"
+    state["investment_decision_intent"] = False
+    state["market_data"] = {
+        "get_stock_quote": {
+            "SECID": "GAZP",
+            "LAST": 128.0,
+            "CHANGE": 0.01,
+            "UPDATETIME": "17:35:11",
+        },
+    }
+    state["news_data"] = [
+        {
+            "title": "Тест новости",
+            "source": "finam",
+            "source_trust": "MEDIUM",
+            "published": "2026-04-15T14:31:45+00:00",
+            "sentiment": "neutral",
+        }
+    ]
+    state["portfolio_metrics"] = {
+        "get_portfolio_summary": {
+            "portfolio_id": "demo_portfolio",
+            "total_value": 1_089_084.3,
+            "positions": [
+                {
+                    "ticker": "GAZP",
+                    "weight": 0.02,
+                    "market_value": 20_470.0,
+                    "sector": "нефтегаз",
+                    "instrument_type": "акция",
+                }
+            ],
+            "allocation": {"by_sector": {"нефтегаз": 267_670.0}},
+        },
+        "calculate_risk_metrics": {
+            "confidence": 0.95,
+            "var_historical": {"value_pct": 0.0128, "interpretation": "hist"},
+            "var_parametric": {"value_pct": 0.012, "interpretation": "param"},
+            "cvar": {"value_pct": 0.0153, "interpretation": "cvar"},
+            "volatility": {"value_annual": 0.1223, "interpretation": "умеренная"},
+            "sharpe": {"value": -0.25, "interpretation": "низкая"},
+            "max_drawdown": {"value": 0.0951},
+            "hhi": {
+                "positions": {"value": 0.2, "interpretation": "умеренная"},
+                "sectors": {"value": 0.18, "interpretation": "умеренная"},
+            },
+        },
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "Потери и хвост распределения" in text
+    assert "Запрос обработан как комплексный" not in text
+    assert "Новостной фон" in text
+    assert "Котировка в ответе" in text
+
+
+@pytest.mark.asyncio
 async def test_summarizer_interpretation_uses_stress_payload() -> None:
     """Интерпретация опирается на поля run_stress_test, а не на шаблон risk_assessment."""
     state = initial_state("Проведи стресс-тест портфеля demo_portfolio при падении IMOEX на 20%")

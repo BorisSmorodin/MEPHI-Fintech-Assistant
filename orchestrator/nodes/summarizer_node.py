@@ -596,6 +596,50 @@ def _describe_available_and_missing_blocks(
     return " ".join(parts).strip()
 
 
+def _interpret_complex_query(
+    portfolio_metrics: dict[str, Any],
+    news_data: list[dict[str, Any]],
+    *,
+    has_market: bool,
+    has_news: bool,
+    has_risk: bool,
+    has_holdings: bool,
+    has_quote: bool,
+) -> str | None:
+    """Связывает для query_type=complex блоки риска, состава, новостей и котировки (не шаблон «три источника»)."""
+    parts: list[str] = []
+    stress = _find_payload_dict(portfolio_metrics.get("run_stress_test"))
+    risk = _find_payload_dict(portfolio_metrics.get("calculate_risk_metrics"))
+
+    if isinstance(stress, dict):
+        parts.append(_interpret_stress_block(stress))
+    if isinstance(risk, dict):
+        parts.append(_interpret_risk_metrics_block(risk))
+
+    if has_holdings and isinstance(_find_payload_dict(portfolio_metrics.get("get_portfolio_summary")), dict):
+        parts.append(
+            "Состав портфеля задаёт фактическую экспозицию по бумагам и секторам; сопоставляйте доли с HHI и отраслевой концентрацией при чтении новостей и агрегированных метрик риска."
+        )
+
+    if has_news:
+        hint = _news_trust_hint(news_data)
+        news_para = (
+            "Новостной фон даёт качественный контекст по эмитенту или теме; оценивайте материальность через долю позиции и надёжность источника. "
+        )
+        if hint:
+            news_para += hint
+        parts.append(news_para.strip())
+
+    if has_market and has_quote:
+        parts.append(
+            "Котировка в ответе — срез цены на момент запроса; VaR, волатильность и просадка относятся к портфелю в целом на историческом горизонте и не эквивалентны сценарию движения одной бумаги без отдельных допущений."
+        )
+
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def _build_interpretation(
     *,
     query_type: str,
@@ -635,6 +679,19 @@ def _build_interpretation(
             "Используйте цифры из блока «Основные показатели» как факты; решение сопоставьте с горизонтом, допустимой просадкой "
             "и, при работе с портфелем в целом, с лимитами риска."
         )
+
+    if query_type == "complex":
+        complex_text = _interpret_complex_query(
+            portfolio_metrics,
+            news_data,
+            has_market=has_market,
+            has_news=has_news,
+            has_risk=has_risk,
+            has_holdings=has_holdings,
+            has_quote=has_quote,
+        )
+        if complex_text:
+            return complex_text
 
     if query_type == "market_monitor" and has_market:
         return (
