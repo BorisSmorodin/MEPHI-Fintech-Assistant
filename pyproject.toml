@@ -43,5 +43,5 @@ asyncio_mode = "auto"
 testpaths = ["tests", "servers"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["config", "orchestrator", "servers", "ui"]
+packages = ["config", "orchestrator", "servers", "ui", "react_agent"]
 

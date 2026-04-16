@@ -74,6 +74,11 @@ class OrchestratorMCPClient:
             self._tools = {tool.name: tool for tool in all_tools}
             self._initialized = True
 
+    async def list_tools(self) -> list[BaseTool]:
+        """Возвращает все MCP-инструменты (market, news, analytics) в стабильном порядке."""
+        await self.ensure_initialized()
+        return sorted(self._tools.values(), key=lambda t: t.name)
+
     async def call_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
         """Выполняет вызов инструмента по имени и аргументам."""
         await self.ensure_initialized()

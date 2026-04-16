@@ -17,6 +17,26 @@
 - Базовый URL: `https://ai.api.cloud.yandex.net/v1`
 - Формат модели при прямом вызове API: `gpt://<folder>/<model>`
 
+## Основной оркестратор и ReAct-агент для сравнения
+
+- **Основная система** — граф в `orchestrator/`: классификация запроса, планировщик (LLM + fallback и sanitize/repair), исполнители MCP и детерминированный summarizer. Это целевой путь продукта.
+- **Альтернатива для тестов и сравнения** — пакет `react_agent/`: один **ReAct**-цикл на **LangGraph** (`langgraph.prebuilt.create_react_agent`), подключённый к **тем же MCP-серверам** через общий клиент [`orchestrator/mcp_client.py`](orchestrator/mcp_client.py) (тот же набор инструментов `market` / `news` / `analytics`, без дублирования серверной логики).
+- Модель для ReAct — **chat completions** (`langchain_openai.ChatOpenAI`, конфигурация из `config/settings.py`), в отличие от планировщика оркестратора, который использует **Responses API** для JSON-плана.
+- Результат `async run_react_query(...)` содержит `messages`, **`tool_trace`** (имя инструмента, аргументы, превью ответа tool) и `final_answer` — по ним удобно сопоставлять **выбор инструментов и аргументы** с планом и фактическими вызовами оркестратора.
+- Пример запуска из кода (после поднятия MCP и настройки `.env`):
+
+```python
+import asyncio
+from react_agent import run_react_query
+
+async def main() -> None:
+    out = await run_react_query("Покажи котировку SBER")
+    print(out["tool_trace"])
+    print(out["final_answer"])
+
+asyncio.run(main())
+```
+
 ## Полный запуск проекта
 
 ### 1) Подготовка окружения
