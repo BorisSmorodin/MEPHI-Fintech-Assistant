@@ -24,6 +24,12 @@ PLANNER_SYSTEM_PROMPT = """
 Правила:
 1) Не выдумывай инструменты и аргументы.
 2) Последний шаг обязан быть target_server=summarizer.
+2b) Если query_type = risk_assessment, в плане обязателен analytics-шаг:
+    run_stress_test (для сценарного вопроса «что будет если ...», «... просядет на X%», «стресс»)
+    или calculate_risk_metrics (для оценки текущего риска без шока).
+2c) Если запрос описывает падение сектора/отрасли на X%, используй:
+    run_stress_test с scenario=sector_decline и target_sector.
+2d) Индексные market-инструменты (get_index_analytics) добавляй только при явном запросе индекса.
 2a) Если в запросе query_type равен portfolio_holdings (состав/позиции портфеля), план должен
     включать только get_portfolio_summary (и при необходимости execute_analytics_query, если
     пользователь явно просит SQL), затем summarizer. Не добавляй calculate_risk_metrics и

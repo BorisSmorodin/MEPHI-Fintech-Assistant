@@ -12,11 +12,38 @@ from orchestrator.state import QueryType
 
 TICKER_PATTERN = re.compile(r"\b[A-Z0-9]{3,12}\b")
 PERCENT_PATTERN = re.compile(r"-?\d+(?:[.,]\d+)?\s*%")
+VAR_WORD_PATTERN = re.compile(r"\bvar\b", re.IGNORECASE)
 
 MARKET_KEYWORDS = {"котиров", "объём", "объем", "торг", "курс", "imoex", "rtsi", "тикер"}
 NEWS_KEYWORDS = {"новост", "событ", "объявл", "ставк", "цб", "влияни"}
-RISK_KEYWORDS = {"риск", "портфел", "var", "просад", "диверсификац", "стресс"}
-STRESS_KEYWORDS = {"стресс", "stress", "сценар", "шок", "паден"}
+RISK_KEYWORDS = {"риск", "портфел", "просад", "диверсификац", "стресс"}
+_INDEX_KEYWORDS = {"imoex", "rtsi", "rgbi", "индекс", "moex"}
+_SECTOR_STRESS_HINTS: tuple[tuple[str, str], ...] = (
+    ("финанс", "финансы"),
+    ("банков", "финансы"),
+    ("нефтегаз", "нефтегаз"),
+    ("нефт", "нефтегаз"),
+    ("газ", "нефтегаз"),
+    ("металлург", "металлургия"),
+    ("металл", "металлургия"),
+    ("ритейл", "ритейл"),
+    ("рознич", "ритейл"),
+    ("it", "it"),
+    ("технолог", "it"),
+    ("энергет", "энергетика"),
+    ("телеком", "телеком"),
+)
+_STRESS_INTENT_PATTERNS = (
+    re.compile(r"\bстресс(?:-?тест)?\b", re.IGNORECASE),
+    re.compile(r"\bstress(?:-?test)?\b", re.IGNORECASE),
+    re.compile(r"что\s+будет\s*,?\s*если", re.IGNORECASE),
+    re.compile(r"сценар(?:ий|ия)\s+(?:падени|снижен|просад)", re.IGNORECASE),
+    re.compile(r"(просяд|просед|упад|сниз|обвал)\w*\s+на\s*-?\d+(?:[.,]\d+)?\s*%", re.IGNORECASE),
+)
+_DROP_WORD_PATTERNS = (
+    re.compile(r"\b(просяд\w*|просед\w*|упад\w*|падени\w*|снижен\w*|обвал\w*)\b", re.IGNORECASE),
+    re.compile(r"-\s*\d+(?:[.,]\d+)?\s*%", re.IGNORECASE),
+)
 # Контекст портфеля без импорта planner_node (избегаем циклических зависимостей).
 _PORTFOLIO_WORD_RE = re.compile(r"\b[\w-]*portfolio[\w-]*\b", re.IGNORECASE)
 _PORTFOLIO_ID_RE = re.compile(r"\b[\w]+_portfolio\b", re.IGNORECASE)
@@ -92,14 +119,37 @@ def is_explicit_market_history_intent(query: str) -> bool:
     return any(hint in lowered for hint in _EXPLICIT_MARKET_HISTORY_HINTS)
 
 
+def infer_sector_stress_hint(query: str) -> str | None:
+    """Извлекает отраслевую подсказку из пользовательского запроса для sector_decline."""
+    lowered = query.casefold()
+    for raw_hint, canonical in _SECTOR_STRESS_HINTS:
+        if raw_hint in lowered:
+            return canonical
+    return None
+
+
+def is_stress_intent(query: str) -> bool:
+    """Определяет стресс-сценарный запрос по совокупности условий и контекста."""
+    lowered = query.casefold()
+    has_percent = bool(PERCENT_PATTERN.search(lowered))
+    has_stress_phrase = any(pattern.search(query) for pattern in _STRESS_INTENT_PATTERNS)
+    has_drop_phrase = any(pattern.search(query) for pattern in _DROP_WORD_PATTERNS)
+    has_index_reference = any(keyword in lowered for keyword in _INDEX_KEYWORDS)
+    has_sector_hint = infer_sector_stress_hint(query) is not None
+
+    if has_stress_phrase:
+        return True
+    if has_percent and has_index_reference and has_drop_phrase:
+        return True
+    if has_percent and has_sector_hint and has_drop_phrase:
+        return True
+    return False
+
+
 def _classify_query_type(query: str) -> QueryType:
     """Классифицирует тип запроса по ключевым словам."""
     lowered = query.lower()
-    has_percentage = bool(PERCENT_PATTERN.search(lowered))
-    has_index_reference = any(keyword in lowered for keyword in {"imoex", "rtsi", "rgbi", "индекс"})
-    if any(keyword in lowered for keyword in STRESS_KEYWORDS):
-        return "risk_assessment"
-    if has_percentage and has_index_reference:
+    if is_stress_intent(query):
         return "risk_assessment"
 
     has_portfolio_context = (
@@ -108,9 +158,7 @@ def _classify_query_type(query: str) -> QueryType:
         or _PORTFOLIO_ID_RE.search(query) is not None
     )
     has_composition_intent = any(hint in lowered for hint in _PORTFOLIO_COMPOSITION_HINTS)
-    has_risk_focus = any(hint in lowered for hint in _PORTFOLIO_RISK_FOCUS_HINTS) or bool(
-        re.search(r"\bvar\b", lowered)
-    )
+    has_risk_focus = any(hint in lowered for hint in _PORTFOLIO_RISK_FOCUS_HINTS) or bool(VAR_WORD_PATTERN.search(query))
     if has_portfolio_context and has_composition_intent:
         if has_risk_focus:
             return "complex"
@@ -124,7 +172,7 @@ def _classify_query_type(query: str) -> QueryType:
     if any(keyword in lowered for keyword in NEWS_KEYWORDS):
         matches += 1
         query_type = "news_analysis"
-    if any(keyword in lowered for keyword in RISK_KEYWORDS):
+    if any(keyword in lowered for keyword in RISK_KEYWORDS) or bool(VAR_WORD_PATTERN.search(query)):
         matches += 1
         query_type = "risk_assessment"
     if matches >= 2:

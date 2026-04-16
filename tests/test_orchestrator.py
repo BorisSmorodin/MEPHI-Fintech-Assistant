@@ -8,7 +8,12 @@ import pytest
 
 from orchestrator.graph import run_query
 from orchestrator.nodes.analytics_executor import _normalize_analytics_tool_args, analytics_executor
-from orchestrator.nodes.input_node import input_node, is_investment_decision_intent
+from orchestrator.nodes.input_node import (
+    infer_sector_stress_hint,
+    input_node,
+    is_investment_decision_intent,
+    is_stress_intent,
+)
 from orchestrator.nodes.market_executor import market_executor
 from orchestrator.nodes.news_executor import news_executor
 from orchestrator.nodes.planner_node import (
@@ -45,6 +50,35 @@ async def test_input_node_validation_and_classification() -> None:
 
     mixed = await input_node({"user_query": "Состав и VaR портфеля demo_portfolio"})
     assert mixed["query_type"] == "complex"
+
+
+@pytest.mark.asyncio
+async def test_input_node_classifies_sector_stress_with_typo_as_risk() -> None:
+    """Секторный стресс с опечаткой должен идти в risk_assessment."""
+    result = await input_node({"user_query": "Что будет, если рынок финансов просдяет на 25%?"})
+    assert result["query_type"] == "risk_assessment"
+
+
+@pytest.mark.asyncio
+async def test_input_node_does_not_force_risk_for_index_percent_without_stress_context() -> None:
+    """Фраза про индекс и процент без стресс-контекста не должна принудительно идти в risk."""
+    result = await input_node({"user_query": "IMOEX вырос на 2% за день, покажи динамику"})
+    assert result["query_type"] == "market_monitor"
+
+
+@pytest.mark.asyncio
+async def test_input_node_news_with_drop_word_is_not_auto_risk() -> None:
+    """Слово «падение» в новостном контексте не делает запрос автоматически risk_assessment."""
+    result = await input_node({"user_query": "Новости о падении котировок нефтегаза"})
+    assert result["query_type"] != "risk_assessment"
+
+
+@pytest.mark.asyncio
+async def test_input_node_var_word_boundary_avoids_false_positive() -> None:
+    """Подстрока var внутри слов не должна включать риск-классификацию."""
+    result = await input_node({"user_query": "Покажи covariance матрицу и котировки SBER"})
+    assert result["query_type"] in {"market_monitor", "complex"}
+    assert result["query_type"] != "risk_assessment"
 
 
 @pytest.mark.asyncio
@@ -337,6 +371,67 @@ async def test_planner_sanitizes_invalid_llm_market_candles_args(monkeypatch) ->
     assert first_args["date_from"]
     assert first_args["date_to"]
     assert "secid" not in first_args
+
+
+@pytest.mark.asyncio
+async def test_planner_repairs_llm_plan_without_required_risk_analytics(monkeypatch) -> None:
+    """Если LLM-план для risk_assessment без analytics, planner чинит его fallback-ом."""
+    llm_schema = PlanSchema(
+        steps=[
+            PlanStepModel(
+                step_number=1,
+                description="news only",
+                target_server="news_executor",
+                tool_name="fetch_news",
+                tool_args={"query": "SBER", "limit": 5},
+            ),
+            PlanStepModel(
+                step_number=2,
+                description="done",
+                target_server="summarizer",
+                tool_name="summarize",
+                tool_args={},
+            ),
+        ],
+        reasoning="test",
+    )
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: llm_schema)
+    state = initial_state("Оцени риск портфеля demo_portfolio")
+    state["query_type"] = "risk_assessment"
+    result = await planner_node(state)
+    tools = [step["tool_name"] for step in result["plan"]]
+    assert "calculate_risk_metrics" in tools or "run_stress_test" in tools
+    assert result["plan_repaired"] is True
+    assert result["plan_contract_ok"] is False
+    assert result["routing_failure_reason"] == "risk_missing_analytics"
+    assert any("скорректирован" in warning for warning in result.get("warnings", []))
+
+
+def test_sanitize_plan_normalizes_index_alias_moex() -> None:
+    """MOEX нормализуется к допустимому IMOEX в get_index_analytics."""
+    raw = [
+        {
+            "step_number": 1,
+            "description": "index",
+            "target_server": "market_executor",
+            "tool_name": "get_index_analytics",
+            "tool_args": {"index": "MOEX"},
+        },
+        {
+            "step_number": 2,
+            "description": "sum",
+            "target_server": "summarizer",
+            "tool_name": "summarize",
+            "tool_args": {},
+        },
+    ]
+    out = _sanitize_plan_steps(
+        steps=raw,
+        user_query="Покажи индекс MOEX",
+        extracted_tickers=[],
+        query_type="market_monitor",
+    )
+    assert out[0]["tool_args"]["index"] == "IMOEX"
 
 
 @pytest.mark.asyncio
@@ -979,6 +1074,20 @@ def test_infer_sector_decline_hint_from_issuer_in_query() -> None:
     assert infer_sector_decline_hint_from_user_query("цена яндекса упадёт на 20%") == "яндекс"
     assert infer_sector_decline_hint_from_user_query("Что с портфелем если газпром -20%") == "газпром"
     assert infer_sector_decline_hint_from_user_query("стресс по индексу") is None
+    assert infer_sector_decline_hint_from_user_query("рынок финансов просдяет на 25%") == "финансы"
+
+
+def test_infer_sector_stress_hint_detects_sector_tokens() -> None:
+    """Подсказка сектора извлекается из текста для стресс-кейсов."""
+    assert infer_sector_stress_hint("рынок финансов просядет на 10%") == "финансы"
+    assert infer_sector_stress_hint("нефтегаз упадет на 20%") == "нефтегаз"
+    assert infer_sector_stress_hint("без отраслевого контекста") is None
+
+
+def test_is_stress_intent_with_percent_and_sector() -> None:
+    """Детектор стресса учитывает процент + сектор + падение."""
+    assert is_stress_intent("Что будет, если рынок финансов просдяет на 25%?") is True
+    assert is_stress_intent("IMOEX вырос на 2% за день") is False
 
 
 def test_analytics_normalize_infers_target_sector_for_sector_decline() -> None:

@@ -7,7 +7,7 @@
 ## 1) Ключевые поля `InvestmentAssistantState`
 
 - `user_query`: исходный запрос пользователя.
-- `query_type`: `market_monitor | news_analysis | risk_assessment | complex`.
+- `query_type`: `market_monitor | news_analysis | risk_assessment | portfolio_holdings | complex`.
 - `extracted_tickers`: список тикеров, выделенных на входе.
 - `plan`: план шагов выполнения (`PlanStep[]`).
 - `current_step`: индекс текущего шага плана.
@@ -19,6 +19,9 @@
 - `final_answer`: итоговый ответ пользователю.
 - `next_node`: целевой узел маршрутизации.
 - `messages`: внутренние сообщения графа.
+- `llm_plan_used` / `llm_plan_parse_failed`: диагностические флаги источника плана.
+- `plan_contract_ok` / `plan_repaired`: результат contract-check и soft-repair плана.
+- `routing_failure_reason`: краткая причина деградации маршрутизации (если была).
 
 ## 2) Жизненный цикл запроса
 
@@ -70,8 +73,14 @@ flowchart TD
 
 - `scenario_success`
 - `tool_selection_correct`
+- `tool_selection_correct_full_plan`
 - `response_time_sec`
 - `mcp_calls_count`
 - `error_count_final`
+- `llm_plan_used`
+- `llm_plan_parse_failed`
+- `plan_contract_ok`
+- `plan_repaired`
+- `routing_failure_reason`
 
 При включенном `QUALITY_METRICS_ENABLE_FILE=true` метрики также пишутся в JSONL.

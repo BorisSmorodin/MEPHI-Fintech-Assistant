@@ -51,6 +51,21 @@ def _observed_servers_from_plan(state: dict[str, Any]) -> set[str]:
     return observed_servers
 
 
+def _planned_servers_from_full_plan(state: dict[str, Any]) -> set[str]:
+    """Возвращает серверы, присутствующие в полном плане (кроме summarizer)."""
+    plan = list(state.get("plan", []))
+    planned_servers: set[str] = set()
+    for step in plan:
+        target_server = str(step.get("target_server", ""))
+        if target_server == "market_executor":
+            planned_servers.add("market")
+        elif target_server == "news_executor":
+            planned_servers.add("news")
+        elif target_server == "analytics_executor":
+            planned_servers.add("analytics")
+    return planned_servers
+
+
 def _estimate_mcp_calls_count(state: dict[str, Any]) -> int:
     """Оценивает число MCP-вызовов по текущему плану и шагам."""
     plan = list(state.get("plan", []))
@@ -75,8 +90,10 @@ def collect_quality_metrics(
     """Формирует словарь метрик качества по результатам сценария."""
     normalized_expected = _normalize_expected_servers(expected_servers, state)
     observed_servers = _observed_servers_from_plan(state)
+    planned_servers = _planned_servers_from_full_plan(state)
     scenario_success = bool(str(state.get("final_answer") or "").strip())
     tool_selection_correct = normalized_expected.issubset(observed_servers)
+    tool_selection_correct_full_plan = normalized_expected.issubset(planned_servers)
 
     record = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -89,6 +106,13 @@ def collect_quality_metrics(
         "error_count_final": int(state.get("error_count", 0)),
         "expected_servers": sorted(normalized_expected),
         "observed_servers": sorted(observed_servers),
+        "planned_servers": sorted(planned_servers),
+        "tool_selection_correct_full_plan": tool_selection_correct_full_plan,
+        "llm_plan_used": bool(state.get("llm_plan_used", False)),
+        "llm_plan_parse_failed": bool(state.get("llm_plan_parse_failed", False)),
+        "plan_contract_ok": bool(state.get("plan_contract_ok", True)),
+        "plan_repaired": bool(state.get("plan_repaired", False)),
+        "routing_failure_reason": str(state.get("routing_failure_reason", "none")),
     }
     log.info("quality_metrics_collected", **record)
     return record

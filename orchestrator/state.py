@@ -46,6 +46,11 @@ class InvestmentAssistantState(TypedDict):
     warnings: list[str]
     investment_decision_intent: bool
     answer_depth: NotRequired[AnswerDepth]
+    llm_plan_used: NotRequired[bool]
+    llm_plan_parse_failed: NotRequired[bool]
+    plan_contract_ok: NotRequired[bool]
+    plan_repaired: NotRequired[bool]
+    routing_failure_reason: NotRequired[str]
 
 
 def initial_state(user_query: str = "") -> InvestmentAssistantState:

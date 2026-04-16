@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field
 import structlog
 
 from config.settings import get_settings
-from orchestrator.nodes.input_node import is_explicit_market_history_intent, is_investment_decision_intent
+from orchestrator.nodes.input_node import (
+    infer_sector_stress_hint,
+    is_explicit_market_history_intent,
+    is_investment_decision_intent,
+    is_stress_intent,
+)
 from orchestrator.prompts import PLANNER_SYSTEM_PROMPT
 
 log = structlog.get_logger()
@@ -42,6 +47,11 @@ SCENARIO_ALIASES = {
     "imoex_drop": "index_drop",
     "rate_up": "rate_hike",
 }
+INDEX_ALIASES = {
+    "MOEX": "IMOEX",
+    "MICEX": "IMOEX",
+}
+ALLOWED_INDEXES = {"IMOEX", "RTSI", "RGBI"}
 ALLOWED_TOOLS_BY_TARGET = {
     "market_executor": {"get_stock_quote", "get_candles", "get_board_securities", "get_index_analytics", "get_bond_data"},
     "news_executor": {"fetch_news", "get_cb_key_rate", "get_market_sentiment", "get_macro_calendar"},
@@ -76,14 +86,21 @@ def _detect_portfolio_id(query: str) -> str:
     return "demo_portfolio"
 
 
+def _extract_percent_value(query: str, default: float) -> float:
+    """Извлекает первое процентное значение из запроса."""
+    match = PERCENT_RE.search(query)
+    if not match:
+        return default
+    raw = match.group(0).replace("%", "").replace(",", ".").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _is_stress_intent(query: str) -> bool:
     """Определяет стресс-сценарий по ключевым маркерам в тексте запроса."""
-    lowered = query.lower()
-    if any(keyword in lowered for keyword in {"стресс", "stress", "сценар", "шок", "паден"}):
-        return True
-    has_percent = bool(PERCENT_RE.search(lowered))
-    has_index = any(keyword in lowered for keyword in {"imoex", "rtsi", "rgbi", "индекс"})
-    return has_percent and has_index
+    return is_stress_intent(query)
 
 
 def infer_sector_decline_hint_from_user_query(user_query: str) -> str | None:
@@ -104,6 +121,11 @@ def infer_sector_decline_hint_from_user_query(user_query: str) -> str | None:
         return "роснефть"
     if "норникель" in lowered or "nornickel" in lowered:
         return "норникель"
+    sector_hint = infer_sector_stress_hint(user_query)
+    if sector_hint:
+        return sector_hint
+    if "финансов" in lowered and ("просд" in lowered or "просяд" in lowered or "просед" in lowered):
+        return "финансы"
     return None
 
 
@@ -163,6 +185,10 @@ def _normalize_analytics_tool_args(
         if scenario == "sector_decline":
             target_sector = normalized.get("target_sector") or normalized.get("sector")
             if not (isinstance(target_sector, str) and target_sector.strip()):
+                inferred_sector = infer_sector_stress_hint(user_query)
+                if inferred_sector:
+                    target_sector = inferred_sector
+            if not (isinstance(target_sector, str) and target_sector.strip()):
                 inferred = infer_sector_decline_hint_from_user_query(user_query)
                 if inferred:
                     target_sector = inferred
@@ -182,9 +208,9 @@ def _normalize_news_tool_args(
 ) -> dict[str, Any]:
     """Нормализует аргументы news-инструментов."""
     normalized = dict(tool_args)
-    fallback_ticker = extracted_tickers[0] if extracted_tickers else "SBER"
+    fallback_ticker = extracted_tickers[0] if extracted_tickers else None
     if tool_name == "fetch_news":
-        query = normalized.get("query") or normalized.get("ticker") or fallback_ticker or user_query
+        query = normalized.get("query") or normalized.get("ticker") or user_query or fallback_ticker or "рынок"
         limit = normalized.get("limit", 10)
         try:
             limit_value = int(limit)
@@ -194,14 +220,14 @@ def _normalize_news_tool_args(
             limit_value = 10
         if limit_value > 100:
             limit_value = 100
-        payload: dict[str, Any] = {"query": str(query).strip() or fallback_ticker, "limit": limit_value}
+        payload: dict[str, Any] = {"query": str(query).strip() or "рынок", "limit": limit_value}
         sources = normalized.get("sources")
         if isinstance(sources, list):
             payload["sources"] = [str(item).strip().lower() for item in sources if str(item).strip()]
         return payload
     if tool_name == "get_market_sentiment":
-        ticker = normalized.get("ticker") or normalized.get("query") or fallback_ticker
-        return {"ticker": str(ticker).strip().upper() or fallback_ticker}
+        ticker = normalized.get("ticker") or normalized.get("query") or fallback_ticker or "SBER"
+        return {"ticker": str(ticker).strip().upper() or "SBER"}
     if tool_name == "get_macro_calendar":
         date_from = str(normalized.get("date_from") or "2026-01-01")
         date_to = str(normalized.get("date_to") or "2026-12-31")
@@ -221,6 +247,12 @@ def _normalize_market_tool_args(
     if tool_name == "get_stock_quote":
         ticker = normalized.get("ticker") or normalized.get("secid") or fallback_ticker
         return {"ticker": str(ticker).strip().upper() or fallback_ticker}
+    if tool_name == "get_index_analytics":
+        index_raw = str(normalized.get("index") or "IMOEX").strip().upper()
+        index = INDEX_ALIASES.get(index_raw, index_raw)
+        if index not in ALLOWED_INDEXES:
+            index = "IMOEX"
+        return {"index": index}
     if tool_name == "get_candles":
         ticker = normalized.get("ticker") or normalized.get("secid") or fallback_ticker
         interval_raw = normalized.get("interval", 24)
@@ -369,6 +401,67 @@ def _sanitize_plan_steps(
     return sanitized
 
 
+def _plan_contract_status(steps: list[dict[str, Any]], query_type: str) -> tuple[bool, str]:
+    """Проверяет минимальный контракт плана для типа запроса."""
+    tools = [str(step.get("tool_name", "")) for step in steps]
+    targets = [str(step.get("target_server", "")) for step in steps]
+
+    if query_type == "risk_assessment":
+        has_risk_analytics = any(
+            target == "analytics_executor" and tool in {"run_stress_test", "calculate_risk_metrics"}
+            for target, tool in zip(targets, tools, strict=False)
+        )
+        if not has_risk_analytics:
+            return False, "risk_missing_analytics"
+        return True, "ok"
+
+    if query_type == "news_analysis":
+        has_news_tool = any(target == "news_executor" for target in targets)
+        if not has_news_tool:
+            return False, "news_missing_news_tool"
+        return True, "ok"
+
+    if query_type == "portfolio_holdings":
+        has_summary = "get_portfolio_summary" in tools
+        has_risk_tools = any(tool in {"run_stress_test", "calculate_risk_metrics"} for tool in tools)
+        if not has_summary:
+            return False, "holdings_missing_summary"
+        if has_risk_tools:
+            return False, "holdings_contains_risk_tools"
+        return True, "ok"
+
+    if query_type == "market_monitor":
+        has_market_tool = any(target == "market_executor" for target in targets)
+        if not has_market_tool:
+            return False, "market_missing_market_tool"
+        return True, "ok"
+
+    return True, "ok"
+
+
+def _repair_plan_if_needed(
+    *,
+    steps: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> tuple[list[dict[str, Any]], bool, bool, str]:
+    """Чинит план через fallback, если нарушен минимальный контракт маршрутизации."""
+    query_type = str(state.get("query_type", "complex"))
+    contract_ok, reason = _plan_contract_status(steps, query_type)
+    if contract_ok:
+        return steps, True, False, "none"
+
+    fallback_schema = _build_fallback_plan(state)
+    fallback_steps = [item.model_dump() for item in fallback_schema.steps]
+    repaired = _sanitize_plan_steps(
+        steps=fallback_steps,
+        user_query=str(state.get("user_query", "")),
+        extracted_tickers=list(state.get("extracted_tickers", [])),
+        query_type=query_type,
+    )
+    log.warning("planner_plan_repaired_from_fallback", contract_reason=reason)
+    return repaired, False, True, reason
+
+
 def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
     """Формирует детерминированный fallback-план без LLM."""
     query = str(state.get("user_query", ""))
@@ -476,24 +569,28 @@ def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
         if not skip_analytics_for_ticker_investment:
             if _is_stress_intent(query):
                 scenario = "index_drop"
-                magnitude = 20.0
+                magnitude = _extract_percent_value(query, 20.0)
                 if "ставк" in query.lower():
                     scenario = "rate_hike"
-                    magnitude = 2.0
-                if "сектор" in query.lower():
+                    magnitude = _extract_percent_value(query, 2.0)
+                sector_hint = infer_sector_stress_hint(query)
+                if "сектор" in query.lower() or sector_hint:
                     scenario = "sector_decline"
-                    magnitude = 15.0
+                    magnitude = _extract_percent_value(query, 15.0)
+                payload: dict[str, Any] = {
+                    "portfolio_id": portfolio_id,
+                    "scenario": scenario,
+                    "magnitude": magnitude,
+                }
+                if scenario == "sector_decline" and sector_hint:
+                    payload["target_sector"] = sector_hint
                 steps.append(
                     PlanStepModel(
                         step_number=step_counter,
                         description="Провести стресс-тестирование портфеля.",
                         target_server="analytics_executor",
                         tool_name="run_stress_test",
-                        tool_args={
-                            "portfolio_id": portfolio_id,
-                            "scenario": scenario,
-                            "magnitude": magnitude,
-                        },
+                        tool_args=payload,
                     )
                 )
             else:
@@ -588,10 +685,18 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         if current_step > 0:
             return {"next_node": "summarizer"}
         llm_plan = None
+        llm_plan_used = False
+        llm_plan_parse_failed = False
+        planner_warnings: list[str] = []
+        routing_failure_reason = "none"
         try:
             llm_plan = _try_llm_plan(state)
+            llm_plan_used = llm_plan is not None
         except Exception:
             llm_plan = None
+            llm_plan_parse_failed = True
+            planner_warnings.append("План LLM не прошёл валидацию, применён fallback-план.")
+            routing_failure_reason = "llm_plan_parse_failed"
             log.warning("planner_llm_plan_failed_fallback")
 
         schema = llm_plan or _build_fallback_plan(state)
@@ -603,15 +708,32 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
             extracted_tickers=list(state.get("extracted_tickers", [])),
             query_type=str(state.get("query_type", "complex")),
         )
+        normalized_plan, plan_contract_ok, plan_repaired, repair_reason = _repair_plan_if_needed(
+            steps=normalized_plan,
+            state=state,
+        )
+        if repair_reason != "none":
+            routing_failure_reason = repair_reason
+            planner_warnings.append("План скорректирован после проверки контракта маршрутизации.")
         if len(normalized_plan) > 10:
             normalized_plan = normalized_plan[:10]
         next_node = normalized_plan[0]["target_server"] if normalized_plan else "summarizer"
         log.info("planner_plan_built", next_node=next_node, steps_count=len(normalized_plan))
-        return {
+        response: dict[str, Any] = {
             "plan": normalized_plan,
             "current_step": 0,
             "next_node": next_node,
+            "llm_plan_used": llm_plan_used,
+            "llm_plan_parse_failed": llm_plan_parse_failed,
+            "plan_contract_ok": plan_contract_ok,
+            "plan_repaired": plan_repaired,
+            "routing_failure_reason": routing_failure_reason,
         }
+        if planner_warnings:
+            merged_warnings = list(state.get("warnings", []))
+            merged_warnings.extend(planner_warnings)
+            response["warnings"] = merged_warnings
+        return response
 
     if current_step >= len(plan) or current_step >= 10:
         log.info("planner_node_route_summarizer_end_of_plan", current_step=current_step, plan_steps=len(plan))

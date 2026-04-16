@@ -45,12 +45,19 @@ def test_collect_quality_metrics_has_required_fields() -> None:
     required_fields = {
         "scenario_success",
         "tool_selection_correct",
+        "tool_selection_correct_full_plan",
         "response_time_sec",
         "mcp_calls_count",
         "error_count_final",
+        "llm_plan_used",
+        "llm_plan_parse_failed",
+        "plan_contract_ok",
+        "plan_repaired",
+        "routing_failure_reason",
     }
     assert required_fields <= set(record.keys())
     assert record["tool_selection_correct"] is True
+    assert record["tool_selection_correct_full_plan"] is True
     assert record["mcp_calls_count"] == 1
 
 
