@@ -139,6 +139,11 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     try:
+        log.info(
+            "analytics_executor_tool_call_dispatched",
+            tool_name=tool_name,
+            tool_args=normalized_tool_args,
+        )
         result = await client.call_tool(tool_name, normalized_tool_args)
         metrics = dict(state.get("portfolio_metrics", {}))
         metrics[tool_name] = result

@@ -78,6 +78,21 @@ def coerce_stress_magnitude_percent_points(scenario: str, magnitude: float) -> f
     return magnitude
 
 
+def _compact_plan_for_log(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Подготавливает компактный вид плана для логов (с аргументами инструментов)."""
+    compact: list[dict[str, Any]] = []
+    for step in steps:
+        compact.append(
+            {
+                "step_number": step.get("step_number"),
+                "target_server": step.get("target_server"),
+                "tool_name": step.get("tool_name"),
+                "tool_args": dict(step.get("tool_args", {})),
+            }
+        )
+    return compact
+
+
 def _detect_portfolio_id(query: str) -> str:
     """Извлекает portfolio_id из текста запроса."""
     match = PORTFOLIO_RE.search(query)
@@ -702,6 +717,11 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         schema = llm_plan or _build_fallback_plan(state)
         log.info("planner_plan_source_selected", source="llm" if llm_plan else "fallback")
         normalized_plan = [item.model_dump() for item in schema.steps]
+        log.info(
+            "planner_plan_raw_steps",
+            source="llm" if llm_plan else "fallback",
+            steps=_compact_plan_for_log(normalized_plan),
+        )
         normalized_plan = _sanitize_plan_steps(
             steps=normalized_plan,
             user_query=str(state.get("user_query", "")),
@@ -718,7 +738,12 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         if len(normalized_plan) > 10:
             normalized_plan = normalized_plan[:10]
         next_node = normalized_plan[0]["target_server"] if normalized_plan else "summarizer"
-        log.info("planner_plan_built", next_node=next_node, steps_count=len(normalized_plan))
+        log.info(
+            "planner_plan_built",
+            next_node=next_node,
+            steps_count=len(normalized_plan),
+            steps=_compact_plan_for_log(normalized_plan),
+        )
         response: dict[str, Any] = {
             "plan": normalized_plan,
             "current_step": 0,

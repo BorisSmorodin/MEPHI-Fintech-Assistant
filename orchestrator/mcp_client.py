@@ -10,8 +10,11 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+import structlog
 
 from config.settings import Settings, get_settings
+
+log = structlog.get_logger()
 
 
 class MCPClientError(Exception):
@@ -78,8 +81,12 @@ class OrchestratorMCPClient:
         if tool is None:
             raise MCPClientError(f"Инструмент {tool_name} не найден в MCP-клиенте.")
         try:
-            return await tool.ainvoke(tool_args)
+            log.info("mcp_client_tool_call_started", tool_name=tool_name, tool_args=tool_args)
+            result = await tool.ainvoke(tool_args)
+            log.info("mcp_client_tool_call_succeeded", tool_name=tool_name)
+            return result
         except Exception as error:
+            log.warning("mcp_client_tool_call_failed", tool_name=tool_name, tool_args=tool_args, error=str(error))
             raise MCPClientError(str(error)) from error
 
 

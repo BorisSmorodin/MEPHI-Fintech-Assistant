@@ -50,6 +50,12 @@ async def market_executor(state: dict[str, Any]) -> dict[str, Any]:
 
     for attempt in range(3):
         try:
+            log.info(
+                "market_executor_tool_call_dispatched",
+                tool_name=tool_name,
+                attempt=attempt + 1,
+                tool_args=tool_args,
+            )
             result = await client.call_tool(tool_name, tool_args)
             market_data = dict(state.get("market_data", {}))
             market_data[tool_name] = result

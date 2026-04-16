@@ -45,6 +45,11 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
     client = get_mcp_client()
 
     try:
+        log.info(
+            "news_executor_tool_call_dispatched",
+            tool_name=tool_name,
+            tool_args=tool_args,
+        )
         result = await client.call_tool(tool_name, tool_args)
         news_data = list(state.get("news_data", []))
         warnings = list(state.get("warnings", []))
