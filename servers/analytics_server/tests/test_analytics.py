@@ -252,6 +252,13 @@ def test_run_stress_test_scenarios(fixtures_dir: Path) -> None:
     assert result_sector["scenario"] == "sector_decline"
     assert result_sector["target_sector"] == "нефтегаз"
 
+    result_yandex = _run_stress_test("demo_portfolio", "sector_decline", 20.0, "Yandex", client)
+    assert result_yandex["affected_positions_count"] > 0
+    assert result_yandex["total_loss_rub"] > 0
+    tickers_hit = {p["ticker"] for p in result_yandex["affected_positions"]}
+    assert "YNDX" in tickers_hit
+    assert result_yandex["target_sector"] == "IT"
+
 
 def test_sql_validation_rejects_non_select() -> None:
     """Проверяет запрет non-SELECT SQL запросов."""

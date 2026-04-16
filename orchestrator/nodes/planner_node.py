@@ -86,6 +86,27 @@ def _is_stress_intent(query: str) -> bool:
     return has_percent and has_index
 
 
+def infer_sector_decline_hint_from_user_query(user_query: str) -> str | None:
+    """Подсказка target_sector для sector_decline, если LLM её не передал (эмитент в тексте).
+
+    Строка передаётся в analytics/stress_tester и сопоставляется с тикерами через _ISSUER_HINT_TO_TICKERS.
+    """
+    lowered = user_query.casefold()
+    if "яндекс" in lowered or "yandex" in lowered:
+        return "яндекс"
+    if "газпром" in lowered or "gazprom" in lowered:
+        return "газпром"
+    if "сбер" in lowered or re.search(r"\bsber\b", lowered):
+        return "сбер"
+    if "лукойл" in lowered or "lukoil" in lowered:
+        return "лукойл"
+    if "роснефт" in lowered:
+        return "роснефть"
+    if "норникель" in lowered or "nornickel" in lowered:
+        return "норникель"
+    return None
+
+
 def _normalize_analytics_tool_args(
     *,
     tool_name: str,
@@ -141,6 +162,10 @@ def _normalize_analytics_tool_args(
         }
         if scenario == "sector_decline":
             target_sector = normalized.get("target_sector") or normalized.get("sector")
+            if not (isinstance(target_sector, str) and target_sector.strip()):
+                inferred = infer_sector_decline_hint_from_user_query(user_query)
+                if inferred:
+                    target_sector = inferred
             if isinstance(target_sector, str) and target_sector.strip():
                 payload["target_sector"] = target_sector.strip()
         return payload

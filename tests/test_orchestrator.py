@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from orchestrator.graph import run_query
-from orchestrator.nodes.analytics_executor import analytics_executor
+from orchestrator.nodes.analytics_executor import _normalize_analytics_tool_args, analytics_executor
 from orchestrator.nodes.input_node import input_node, is_investment_decision_intent
 from orchestrator.nodes.market_executor import market_executor
 from orchestrator.nodes.news_executor import news_executor
@@ -15,6 +15,7 @@ from orchestrator.nodes.planner_node import (
     PlanSchema,
     PlanStepModel,
     _sanitize_plan_steps,
+    infer_sector_decline_hint_from_user_query,
     planner_node,
     route_planner,
 )
@@ -789,4 +790,21 @@ def test_is_investment_decision_intent_detects_phrases() -> None:
     """Детектор инвестиционного намерения."""
     assert is_investment_decision_intent("Стоит ли покупать GAZP сейчас?") is True
     assert is_investment_decision_intent("Покажи котировку SBER") is False
+
+
+def test_infer_sector_decline_hint_from_issuer_in_query() -> None:
+    """Подсказка эмитента для sector_decline, если LLM не передал target_sector."""
+    assert infer_sector_decline_hint_from_user_query("цена яндекса упадёт на 20%") == "яндекс"
+    assert infer_sector_decline_hint_from_user_query("Что с портфелем если газпром -20%") == "газпром"
+    assert infer_sector_decline_hint_from_user_query("стресс по индексу") is None
+
+
+def test_analytics_normalize_infers_target_sector_for_sector_decline() -> None:
+    """run_stress_test + sector_decline без target_sector получает подсказку из user_query."""
+    args, _ = _normalize_analytics_tool_args(
+        tool_name="run_stress_test",
+        tool_args={"portfolio_id": "demo_portfolio", "scenario": "sector_decline", "magnitude": 20.0},
+        user_query="Что с demo_portfolio если цена яндекса упадёт на 20 процентов",
+    )
+    assert args.get("target_sector") == "яндекс"
 

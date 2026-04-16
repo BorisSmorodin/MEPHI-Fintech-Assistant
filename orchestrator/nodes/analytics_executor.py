@@ -9,7 +9,10 @@ import structlog
 
 from config.settings import get_settings
 from orchestrator.mcp_client import MCPClientError, get_mcp_client
-from orchestrator.nodes.planner_node import coerce_stress_magnitude_percent_points
+from orchestrator.nodes.planner_node import (
+    coerce_stress_magnitude_percent_points,
+    infer_sector_decline_hint_from_user_query,
+)
 
 log = structlog.get_logger()
 ALLOWED_ANALYTICS_TOOLS = {
@@ -83,9 +86,14 @@ def _normalize_analytics_tool_args(
             "scenario": scenario,
             "magnitude": magnitude,
         }
-        target_sector = normalized.get("target_sector")
-        if scenario == "sector_decline" and isinstance(target_sector, str) and target_sector.strip():
-            payload["target_sector"] = target_sector.strip()
+        target_sector = normalized.get("target_sector") or normalized.get("sector")
+        if scenario == "sector_decline":
+            if not (isinstance(target_sector, str) and target_sector.strip()):
+                inferred = infer_sector_decline_hint_from_user_query(user_query)
+                if inferred:
+                    target_sector = inferred
+            if isinstance(target_sector, str) and target_sector.strip():
+                payload["target_sector"] = target_sector.strip()
         return payload, warning
 
     return normalized, warning

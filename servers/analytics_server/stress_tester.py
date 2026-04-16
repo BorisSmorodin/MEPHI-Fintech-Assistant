@@ -11,6 +11,16 @@ from servers.analytics_server.risk_calculator import build_portfolio_series
 
 FINANCIAL_SENSITIVE_SECTORS = {"финансы", "строительство"}
 
+# Подсказки эмитента/тикера в target_sector (LLM часто передаёт «Yandex», тогда как в БД сектор «IT»).
+_ISSUER_HINT_TO_TICKERS: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
+    (frozenset({"яндекс", "yandex", "yndx", "ydex"}), frozenset({"YNDX", "YDEX"})),
+    (frozenset({"газпром", "gazprom", "gazp"}), frozenset({"GAZP"})),
+    (frozenset({"сбер", "sber", "сбербанк", "sberbank"}), frozenset({"SBER"})),
+    (frozenset({"лукойл", "lukoil", "lkoh"}), frozenset({"LKOH"})),
+    (frozenset({"роснефт", "rosneft", "rosn"}), frozenset({"ROSN"})),
+    (frozenset({"норникель", "nornickel", "gmkn"}), frozenset({"GMKN"})),
+)
+
 
 def _to_position_map(
     positions: list[dict],
@@ -149,39 +159,89 @@ def _run_rate_hike(
     return affected_positions, total_loss
 
 
+def _tickers_from_issuer_hint(hint: str) -> frozenset[str] | None:
+    """Возвращает тикеры по текстовой подсказке (название компании / тикер в нижнем регистре)."""
+    h = hint.strip().casefold()
+    if not h:
+        return None
+    for synonyms, tickers in _ISSUER_HINT_TO_TICKERS:
+        if h in synonyms or any(s in h for s in synonyms):
+            return tickers
+    return None
+
+
+def _select_sector_decline_positions(
+    converted: list[dict],
+    target_sector: str | None,
+) -> tuple[list[dict], str]:
+    """Подбирает позиции: сектор (без учёта регистра), тикер, подсказка эмитента или крупнейший сектор."""
+    sector_value_map: dict[str, float] = defaultdict(float)
+    for position in converted:
+        sector_value_map[position["sector"]] += position["market_value"]
+
+    if not target_sector or not str(target_sector).strip():
+        selected_label = max(sector_value_map.items(), key=lambda item: item[1])[0]
+        matched = [p for p in converted if p["sector"] == selected_label]
+        return matched, selected_label
+
+    hint_raw = str(target_sector).strip()
+    hint_cf = hint_raw.casefold()
+    tickers_in_portfolio = {p["ticker"] for p in converted}
+
+    # Явный тикер в target_sector (например YNDX).
+    hint_upper = hint_raw.upper()
+    if hint_upper in tickers_in_portfolio:
+        matched = [p for p in converted if p["ticker"] == hint_upper]
+        return matched, matched[0]["sector"]
+
+    # Совпадение названия сектора без учёта регистра.
+    matched = [p for p in converted if p["sector"].casefold() == hint_cf]
+    if matched:
+        return matched, matched[0]["sector"]
+
+    # Подстрока в названии сектора.
+    matched = [p for p in converted if hint_cf in p["sector"].casefold()]
+    if matched:
+        return matched, matched[0]["sector"]
+
+    # Известные эмитенты (Yandex при sector=IT в данных).
+    issuer_tickers = _tickers_from_issuer_hint(hint_raw)
+    if issuer_tickers:
+        matched = [p for p in converted if p["ticker"] in issuer_tickers]
+        if matched:
+            return matched, matched[0]["sector"]
+
+    return [], hint_raw
+
+
 def _run_sector_decline(
     positions: list[dict],
     current_prices: dict[str, float],
     magnitude: float,
     target_sector: str | None,
 ) -> tuple[list[dict], float, str]:
-    """Сценарий падения сектора на заданный процент."""
+    """Сценарий падения сектора (или выбранных позиций по эмитенту) на заданный процент."""
     converted, _ = _to_position_map(positions, current_prices)
     if not converted:
         return [], 0.0, target_sector or ""
 
-    sector_value_map: dict[str, float] = defaultdict(float)
-    for position in converted:
-        sector_value_map[position["sector"]] += position["market_value"]
-    selected_sector = target_sector or max(sector_value_map.items(), key=lambda item: item[1])[0]
+    matched_positions, selected_label = _select_sector_decline_positions(converted, target_sector)
 
     shock = abs(magnitude) / 100.0
     affected_positions: list[dict] = []
     total_loss = 0.0
-    for position in converted:
-        if position["sector"] != selected_sector:
-            continue
+    for position in matched_positions:
         loss_rub = position["market_value"] * shock
         total_loss += loss_rub
         affected_positions.append(
             {
                 "ticker": position["ticker"],
-                "sector": selected_sector,
+                "sector": position["sector"],
                 "loss_rub": round(loss_rub, 2),
                 "loss_pct": round(shock, 6),
             }
         )
-    return affected_positions, total_loss, selected_sector
+    return affected_positions, total_loss, selected_label
 
 
 def run_stress_test(
