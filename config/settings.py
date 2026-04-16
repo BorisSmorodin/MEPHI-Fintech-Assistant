@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     news_http_timeout_sec: int = 10
 
     # Оркестратор
-    max_recursion: int = 10
+    max_recursion: int = 20
     max_error_count: int = 3
     quality_metrics_path: str = "data/fixtures/quality_metrics.jsonl"
     quality_metrics_enable_file: bool = False

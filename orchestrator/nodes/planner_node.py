@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 import json
 import re
 from typing import Any, Literal
@@ -180,6 +181,37 @@ def _normalize_market_tool_args(
     if tool_name == "get_stock_quote":
         ticker = normalized.get("ticker") or normalized.get("secid") or fallback_ticker
         return {"ticker": str(ticker).strip().upper() or fallback_ticker}
+    if tool_name == "get_candles":
+        ticker = normalized.get("ticker") or normalized.get("secid") or fallback_ticker
+        interval_raw = normalized.get("interval", 24)
+        interval_map = {"1m": 1, "10m": 10, "1h": 60, "1d": 24, "1w": 7, "d": 24, "w": 7}
+        interval = 24
+        if isinstance(interval_raw, str):
+            normalized_interval_raw = interval_raw.strip().lower()
+            if normalized_interval_raw in interval_map:
+                interval = interval_map[normalized_interval_raw]
+            else:
+                try:
+                    interval = int(normalized_interval_raw)
+                except ValueError:
+                    interval = 24
+        elif isinstance(interval_raw, (int, float)):
+            interval = int(interval_raw)
+        if interval not in {1, 10, 60, 24, 7}:
+            interval = 24
+
+        date_from = normalized.get("date_from")
+        date_to = normalized.get("date_to")
+        if not isinstance(date_from, str) or not date_from.strip():
+            date_from = (date.today() - timedelta(days=30)).isoformat()
+        if not isinstance(date_to, str) or not date_to.strip():
+            date_to = date.today().isoformat()
+        return {
+            "ticker": str(ticker).strip().upper() or fallback_ticker,
+            "date_from": str(date_from).strip(),
+            "date_to": str(date_to).strip(),
+            "interval": interval,
+        }
     return normalized
 
 

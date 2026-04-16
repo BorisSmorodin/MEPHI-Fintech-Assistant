@@ -23,22 +23,6 @@ def _escape_untrusted_text(value: str) -> str:
     )
 
 
-def _sanitize_news_rows(news_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Санитизирует текстовые поля новостей перед использованием в промптах/ответах."""
-    sanitized_rows: list[dict[str, Any]] = []
-    for row in news_data:
-        if not isinstance(row, dict):
-            continue
-        sanitized_row: dict[str, Any] = {}
-        for key, value in row.items():
-            if isinstance(value, str):
-                sanitized_row[key] = _escape_untrusted_text(value)
-            else:
-                sanitized_row[key] = value
-        sanitized_rows.append(sanitized_row)
-    return sanitized_rows
-
-
 def _decode_json_payload(value: Any) -> Any:
     """Пытается декодировать JSON-строку в объект Python."""
     if not isinstance(value, str):
@@ -190,11 +174,11 @@ def _extract_news_lines(news_data: list[dict[str, Any]], *, limit: int = 5) -> l
         news_rows.extend(_find_payload_list(row))
     news_rows = [row for row in news_rows if "title" in row]
     for row in news_rows[:limit]:
-        source = str(row.get("source", "unknown"))
-        trust = str(row.get("source_trust", "n/a"))
-        title = str(row.get("title", "без заголовка"))
-        sentiment = str(row.get("sentiment", "neutral"))
-        published = str(row.get("published", "н/д"))
+        source = _escape_untrusted_text(str(row.get("source", "unknown")))
+        trust = _escape_untrusted_text(str(row.get("source_trust", "n/a")))
+        title = _escape_untrusted_text(str(row.get("title", "без заголовка")))
+        sentiment = _escape_untrusted_text(str(row.get("sentiment", "neutral")))
+        published = _escape_untrusted_text(str(row.get("published", "н/д")))
         lines.append(
             f"- [{source}/{trust}] {title} (тональность: {sentiment}, дата: {published})."
         )
@@ -205,7 +189,7 @@ def _extract_news_lines(news_data: list[dict[str, Any]], *, limit: int = 5) -> l
             sentiment_payloads.append(_find_payload_dict(row.get("payload")))
     for payload in sentiment_payloads:
         if isinstance(payload, dict):
-            ticker = str(payload.get("ticker", "инструмент"))
+            ticker = _escape_untrusted_text(str(payload.get("ticker", "инструмент")))
             score = _format_float(_as_float(payload.get("score")))
             lines.append(f"- Агрегированная тональность по {ticker}: score={score}.")
     return lines
@@ -328,7 +312,9 @@ def _format_summary(state: dict[str, Any]) -> str:
     user_query = str(state.get("user_query", "")).strip() or "Запрос не указан."
     query_type = str(state.get("query_type", "complex"))
     market_data = dict(state.get("market_data", {}))
-    news_data = _sanitize_news_rows(list(state.get("news_data", [])))
+    # Важно: не экранируем весь payload до парсинга, иначе JSON в MCP text-контенте
+    # становится невалидным и новости перестают извлекаться.
+    news_data = list(state.get("news_data", []))
     portfolio_metrics = dict(state.get("portfolio_metrics", {}))
     warnings = list(state.get("warnings", []))
 

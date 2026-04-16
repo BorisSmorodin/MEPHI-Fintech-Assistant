@@ -237,6 +237,41 @@ async def test_planner_sanitizes_invalid_llm_analytics_args(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_planner_sanitizes_invalid_llm_market_candles_args(monkeypatch) -> None:
+    """Проверяет санитизацию аргументов get_candles после LLM."""
+    llm_schema = PlanSchema(
+        steps=[
+            PlanStepModel(
+                step_number=1,
+                description="candles",
+                target_server="market_executor",
+                tool_name="get_candles",
+                tool_args={"secid": "gazp", "interval": "daily"},
+            ),
+            PlanStepModel(
+                step_number=2,
+                description="done",
+                target_server="summarizer",
+                tool_name="summarize",
+                tool_args={},
+            ),
+        ],
+        reasoning="test",
+    )
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: llm_schema)
+    state = initial_state("Покажи историю GAZP")
+    state["query_type"] = "complex"
+    state["extracted_tickers"] = ["GAZP"]
+    result = await planner_node(state)
+    first_args = result["plan"][0]["tool_args"]
+    assert first_args["ticker"] == "GAZP"
+    assert first_args["interval"] == 24
+    assert first_args["date_from"]
+    assert first_args["date_to"]
+    assert "secid" not in first_args
+
+
+@pytest.mark.asyncio
 async def test_analytics_executor_normalizes_dirty_args(monkeypatch) -> None:
     """Проверяет normalizer аргументов analytics_executor для несовместимого шага."""
 
@@ -399,4 +434,24 @@ async def test_summarizer_escapes_untrusted_news_content() -> None:
     assert result["final_answer"]
     assert "&#123;malicious&#125;" in _escape_untrusted_text("{malicious}")
     assert "&lt;script&gt;" in _escape_untrusted_text("<script>alert(1)</script>")
+
+
+@pytest.mark.asyncio
+async def test_summarizer_parses_mcp_text_wrapped_news_payload() -> None:
+    """Проверяет, что summarizer извлекает новости из MCP text-обертки."""
+    state = initial_state("Какие новости по SBER?")
+    state["query_type"] = "news_analysis"
+    state["news_data"] = [
+        {
+            "type": "text",
+            "text": (
+                '[{"title":"SBER reports growth","source":"rbc","source_trust":"MEDIUM",'
+                '"published":"2026-04-16T10:00:00+00:00","sentiment":"positive"}]'
+            ),
+        }
+    ]
+    result = await summarizer_node(state)
+    final_answer = result["final_answer"] or ""
+    assert "SBER reports growth" in final_answer
+    assert "Недостаточно данных для содержательного ответа" not in final_answer
 
