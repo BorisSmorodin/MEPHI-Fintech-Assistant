@@ -42,6 +42,7 @@ class PlanSchema(BaseModel):
 
 PORTFOLIO_RE = re.compile(r"\b[\w-]*portfolio[\w-]*\b", re.IGNORECASE)
 PERCENT_RE = re.compile(r"-?\d+(?:[.,]\d+)?\s*%")
+PORTFOLIO_PLACEHOLDER_RE = re.compile(r"^[<{[]?\s*portfolio_id\s*[>\]}]?$", re.IGNORECASE)
 SCENARIO_ALIASES = {
     "market_downturn": "index_drop",
     "imoex_drop": "index_drop",
@@ -101,6 +102,21 @@ def _detect_portfolio_id(query: str) -> str:
     return "demo_portfolio"
 
 
+def _normalize_portfolio_id_value(raw_value: Any, user_query: str) -> str:
+    """Нормализует portfolio_id: плейсхолдеры заменяются на стандартный id."""
+    default_portfolio_id = _detect_portfolio_id(user_query)
+    if raw_value is None:
+        return default_portfolio_id
+    value = str(raw_value).strip()
+    if not value:
+        return default_portfolio_id
+    if PORTFOLIO_PLACEHOLDER_RE.fullmatch(value):
+        return default_portfolio_id
+    if value.casefold() in {"portfolio_id", "<id>", "{id}", "[id]"}:
+        return default_portfolio_id
+    return value
+
+
 def _extract_percent_value(query: str, default: float) -> float:
     """Извлекает первое процентное значение из запроса."""
     match = PERCENT_RE.search(query)
@@ -154,13 +170,12 @@ def _normalize_analytics_tool_args(
     normalized = dict(tool_args)
 
     # Унифицируем ключ portfolio_id.
-    portfolio_id = (
+    raw_portfolio_id = (
         normalized.get("portfolio_id")
         or normalized.get("portfolio_name")
         or normalized.get("name")
-        or _detect_portfolio_id(user_query)
     )
-    portfolio_id = str(portfolio_id).strip() if portfolio_id else "demo_portfolio"
+    portfolio_id = _normalize_portfolio_id_value(raw_portfolio_id, user_query)
     normalized["portfolio_id"] = portfolio_id
     normalized.pop("portfolio_name", None)
     normalized.pop("name", None)

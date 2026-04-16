@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -15,6 +16,7 @@ from orchestrator.nodes.planner_node import (
 )
 
 log = structlog.get_logger()
+PORTFOLIO_PLACEHOLDER_RE = re.compile(r"^[<{[]?\s*portfolio_id\s*[>\]}]?$", re.IGNORECASE)
 ALLOWED_ANALYTICS_TOOLS = {
     "get_portfolio_summary",
     "calculate_risk_metrics",
@@ -31,16 +33,21 @@ def _normalize_analytics_tool_args(
 ) -> tuple[dict[str, Any], str | None]:
     """Нормализует аргументы analytics-инструментов до MCP-контракта."""
     normalized = dict(tool_args)
-    portfolio_id = (
+    raw_portfolio_id = (
         normalized.get("portfolio_id")
         or normalized.get("portfolio_name")
         or normalized.get("name")
-        or "demo_portfolio"
     )
-    if isinstance(portfolio_id, str):
-        portfolio_id = portfolio_id.strip() or "demo_portfolio"
+    if raw_portfolio_id is None:
+        portfolio_id = "demo_portfolio"
     else:
-        portfolio_id = str(portfolio_id)
+        portfolio_id = str(raw_portfolio_id).strip()
+        if (
+            not portfolio_id
+            or PORTFOLIO_PLACEHOLDER_RE.fullmatch(portfolio_id)
+            or portfolio_id.casefold() in {"portfolio_id", "<id>", "{id}", "[id]"}
+        ):
+            portfolio_id = "demo_portfolio"
 
     warning: str | None = None
     if "portfolio_id" not in normalized:

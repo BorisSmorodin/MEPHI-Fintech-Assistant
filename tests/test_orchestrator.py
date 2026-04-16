@@ -339,6 +339,48 @@ async def test_planner_sanitizes_invalid_llm_analytics_args(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_planner_replaces_placeholder_portfolio_id_in_llm_plan(monkeypatch) -> None:
+    """Плейсхолдер <portfolio_id> заменяется на стандартный id при санитизации плана."""
+    llm_schema = PlanSchema(
+        steps=[
+            PlanStepModel(
+                step_number=1,
+                description="summary",
+                target_server="analytics_executor",
+                tool_name="get_portfolio_summary",
+                tool_args={"portfolio_id": "<portfolio_id>"},
+            ),
+            PlanStepModel(
+                step_number=2,
+                description="stress",
+                target_server="analytics_executor",
+                tool_name="run_stress_test",
+                tool_args={
+                    "portfolio_id": "<portfolio_id>",
+                    "scenario": "sector_decline",
+                    "magnitude": 25.0,
+                    "target_sector": "финансы",
+                },
+            ),
+            PlanStepModel(
+                step_number=3,
+                description="done",
+                target_server="summarizer",
+                tool_name="summarize",
+                tool_args={},
+            ),
+        ],
+        reasoning="test",
+    )
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: llm_schema)
+    state = initial_state("Что будет, если рынок финансов просядет на 25%?")
+    state["query_type"] = "risk_assessment"
+    result = await planner_node(state)
+    assert result["plan"][0]["tool_args"]["portfolio_id"] == "demo_portfolio"
+    assert result["plan"][1]["tool_args"]["portfolio_id"] == "demo_portfolio"
+
+
+@pytest.mark.asyncio
 async def test_planner_sanitizes_invalid_llm_market_candles_args(monkeypatch) -> None:
     """Проверяет санитизацию аргументов get_candles после LLM."""
     llm_schema = PlanSchema(
@@ -467,6 +509,45 @@ async def test_analytics_executor_normalizes_dirty_args(monkeypatch) -> None:
     assert args["portfolio_id"] == "demo_portfolio"
     assert "portfolio_name" not in args
     assert "tickers" not in args
+
+
+@pytest.mark.asyncio
+async def test_analytics_executor_replaces_placeholder_portfolio_id() -> None:
+    """analytics_executor заменяет плейсхолдер portfolio_id на demo_portfolio."""
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def call_tool(self, tool_name: str, tool_args: dict[str, Any]):
+            self.calls.append((tool_name, dict(tool_args)))
+            return {"portfolio_id": tool_args.get("portfolio_id", "n/a")}
+
+    client = RecordingClient()
+    state = initial_state("stress placeholder")
+    state["plan"] = [
+        {
+            "step_number": 1,
+            "description": "summary",
+            "target_server": "analytics_executor",
+            "tool_name": "get_portfolio_summary",
+            "tool_args": {"portfolio_id": "<portfolio_id>"},
+        }
+    ]
+
+    # Локально подменяем фабрику MCP-клиента для проверки аргументов.
+    from orchestrator.nodes import analytics_executor as analytics_module
+
+    original_get_client = analytics_module.get_mcp_client
+    analytics_module.get_mcp_client = lambda: client
+    try:
+        await analytics_executor(state)
+    finally:
+        analytics_module.get_mcp_client = original_get_client
+
+    assert client.calls
+    _tool, args = client.calls[0]
+    assert args["portfolio_id"] == "demo_portfolio"
 
 
 @pytest.mark.asyncio
