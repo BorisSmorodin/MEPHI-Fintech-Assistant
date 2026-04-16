@@ -37,6 +37,8 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+- E2e из консоли (после запуска трёх MCP-серверов и настройки `.env`): `python -m ui.cli react` (REPL) или одноразово: `python -m ui.cli react -q "Покажи котировку SBER"`.
+
 ## Полный запуск проекта
 
 ### 1) Подготовка окружения
@@ -64,6 +66,7 @@ asyncio.run(main())
   - `python -m ui.cli`
   - или явно: `python -m ui.cli chat`
   - с управлением глубиной ответа: `python -m ui.cli chat --answer-depth auto|compact|standard`
+  - ReAct-агент (e2e, сравнение с оркестратором): `python -m ui.cli react` или `python -m ui.cli react -q "..."`
 - Streamlit:
   - `streamlit run ui/streamlit_app.py`
 
