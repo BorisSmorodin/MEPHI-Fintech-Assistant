@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import re
 import time
 from typing import Any, Callable
 
@@ -130,10 +131,25 @@ def _flat_or_terms(groups: list[list[str]]) -> list[str]:
     return flat
 
 
+def _term_matches_in_text(composite_lower: str, term: str) -> bool:
+    """Проверяет вхождение терма без ложных срабатываний подстроки (напр. «сбер» в «Кенигсберг»).
+
+    Учитывается целое слово по границам \\w (Unicode) или префикс слова («сбербанк», «sberbank»).
+    """
+    if not term:
+        return False
+    escaped = re.escape(term)
+    whole = rf"(?<!\w){escaped}(?!\w)"
+    prefix_of_word = rf"(?<!\w){escaped}(?=\w)"
+    return bool(re.search(whole, composite_lower, re.UNICODE)) or bool(
+        re.search(prefix_of_word, composite_lower, re.UNICODE)
+    )
+
+
 def _matches_match_groups(composite_lower: str, groups: list[list[str]]) -> bool:
     """Проверяет AND по группам: в каждой группе должен совпасть хотя бы один термин."""
     for group in groups:
-        if not any(term in composite_lower for term in group):
+        if not any(_term_matches_in_text(composite_lower, term) for term in group):
             return False
     return True
 
@@ -261,7 +277,7 @@ class NewsFetcher:
             fallback_mode = "or_query_terms"
             for row in rows:
                 composite_text = f"{row['title']} {row['summary']}".lower()
-                if any(token in composite_text for token in or_terms):
+                if any(_term_matches_in_text(composite_text, token) for token in or_terms):
                     dedup_key = (row["title"].lower(), row["source"])
                     if dedup_key not in deduplicated:
                         deduplicated[dedup_key] = row

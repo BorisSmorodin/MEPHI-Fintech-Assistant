@@ -159,6 +159,34 @@ def test_unavailable_source_fallback(monkeypatch) -> None:
     assert diagnostics["degraded"] is False
 
 
+def test_sber_alias_not_inside_kenigsberg_substring(monkeypatch) -> None:
+    """«сбер» не должен матчить подстроку в «кенигсберг*»; префикс «сбербанк» — да."""
+    fetcher = NewsFetcher(settings=_settings(), session=requests.Session())
+    monkeypatch.setattr(fetcher.session, "get", lambda *_args, **_kwargs: DummyResponse(content=b"<rss />"))
+    monkeypatch.setattr(
+        "servers.news_server.rss_fetcher.feedparser.parse",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            entries=[
+                SimpleNamespace(
+                    title='Мединский против кенигсберских "флешбеков"',
+                    link="https://example.com/bad",
+                    published="Tue, 14 Apr 2026 13:00:00 +0000",
+                    summary="",
+                ),
+                SimpleNamespace(
+                    title="Сбербанк подвел итоги квартала",
+                    link="https://example.com/good",
+                    published="Tue, 14 Apr 2026 12:00:00 +0000",
+                    summary="Дивиденды",
+                ),
+            ]
+        ),
+    )
+    result = fetcher.fetch_news(query="SBER", sources=["interfax"], limit=10)
+    assert len(result) == 1
+    assert "Сбербанк" in result[0]["title"]
+
+
 def test_source_alias_no_irrelevant_recency_fallback(monkeypatch) -> None:
     """Alias источника (cbonds→finam); без релевантных совпадений не подставляем случайные топ-N."""
     fetcher = NewsFetcher(settings=_settings(), session=requests.Session())
