@@ -6,10 +6,12 @@ import asyncio
 from typing import Any
 
 from langchain_core.messages import AIMessage
+import structlog
 
 from config.settings import get_settings
 from orchestrator.mcp_client import MCPClientError, get_mcp_client
 
+log = structlog.get_logger()
 ALLOWED_MARKET_TOOLS = {
     "get_stock_quote",
     "get_candles",
@@ -32,6 +34,7 @@ async def market_executor(state: dict[str, Any]) -> dict[str, Any]:
 
     tool_name = str(step.get("tool_name", ""))
     tool_args = dict(step.get("tool_args", {}))
+    log.info("market_executor_step_started", current_step=current_step, tool_name=tool_name, tool_args=tool_args)
     settings = get_settings()
     if tool_name not in ALLOWED_MARKET_TOOLS:
         return {
@@ -50,6 +53,7 @@ async def market_executor(state: dict[str, Any]) -> dict[str, Any]:
             result = await client.call_tool(tool_name, tool_args)
             market_data = dict(state.get("market_data", {}))
             market_data[tool_name] = result
+            log.info("market_executor_step_succeeded", tool_name=tool_name, attempt=attempt + 1)
             return {
                 "market_data": market_data,
                 "current_step": current_step + 1,
@@ -57,17 +61,20 @@ async def market_executor(state: dict[str, Any]) -> dict[str, Any]:
             }
         except MCPClientError as error:
             last_error = str(error)
+            log.warning("market_executor_attempt_failed", tool_name=tool_name, attempt=attempt + 1, error=last_error)
             if "не найден" in last_error.lower():
                 break
             if attempt < len(delays) - 1:
                 await asyncio.sleep(delays[attempt])
         except Exception as error:
             last_error = str(error)
+            log.warning("market_executor_attempt_failed", tool_name=tool_name, attempt=attempt + 1, error=last_error)
             if "не найден" in last_error.lower():
                 break
             if attempt < len(delays) - 1:
                 await asyncio.sleep(delays[attempt])
 
+    log.error("market_executor_step_failed", tool_name=tool_name, error=last_error)
     return {
         "error_count": min(int(state.get("error_count", 0)) + 1, settings.max_error_count),
         "current_step": current_step + 1,

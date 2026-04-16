@@ -7,6 +7,9 @@ import json
 from typing import Any
 
 from langchain_core.messages import AIMessage
+import structlog
+
+log = structlog.get_logger()
 
 
 def _escape_untrusted_text(value: str) -> str:
@@ -363,7 +366,16 @@ def _format_summary(state: dict[str, Any]) -> str:
 
 async def summarizer_node(state: dict[str, Any]) -> dict[str, Any]:
     """Суммаризирует накопленные данные и формирует final_answer."""
+    log.info(
+        "summarizer_node_started",
+        query_type=state.get("query_type"),
+        market_keys=sorted(list(dict(state.get("market_data", {})).keys())),
+        news_rows=len(list(state.get("news_data", []))),
+        portfolio_keys=sorted(list(dict(state.get("portfolio_metrics", {})).keys())),
+        warnings_count=len(list(state.get("warnings", []))),
+    )
     final_answer = _format_summary(state)
+    log.info("summarizer_node_completed", final_answer_length=len(final_answer))
     return {
         "final_answer": final_answer,
         "messages": [AIMessage(content=final_answer)],

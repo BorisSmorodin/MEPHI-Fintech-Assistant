@@ -8,9 +8,12 @@ from typing import Any, Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
+import structlog
 
 from config.settings import get_settings
 from orchestrator.prompts import PLANNER_SYSTEM_PROMPT
+
+log = structlog.get_logger()
 
 
 class PlanStepModel(BaseModel):
@@ -240,6 +243,12 @@ def _sanitize_plan_steps(
         )
     for index, step in enumerate(sanitized, start=1):
         step["step_number"] = index
+    log.info(
+        "planner_plan_sanitized",
+        steps_count=len(sanitized),
+        targets=[step.get("target_server") for step in sanitized],
+        tools=[step.get("tool_name") for step in sanitized],
+    )
     return sanitized
 
 
@@ -357,6 +366,7 @@ def _try_llm_plan(state: dict[str, Any]) -> PlanSchema | None:
     """Пытается получить structured plan через LLM."""
     settings = get_settings()
     if not settings.yandex_cloud_api_key or not settings.yandex_cloud_folder:
+        log.info("planner_llm_disabled_missing_credentials")
         return None
 
     client = OpenAI(
@@ -382,8 +392,10 @@ def _try_llm_plan(state: dict[str, Any]) -> PlanSchema | None:
     )
     raw_text = response.output_text
     if not raw_text:
+        log.warning("planner_llm_empty_response")
         return None
     payload = json.loads(raw_text)
+    log.info("planner_llm_plan_received", steps_count=len(payload.get("steps", [])))
     return PlanSchema.model_validate(payload)
 
 
@@ -400,7 +412,15 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
     plan = list(state.get("plan", []))
     current_step = int(state.get("current_step", 0))
+    log.info(
+        "planner_node_started",
+        current_step=current_step,
+        existing_plan_steps=len(plan),
+        error_count=int(state.get("error_count", 0)),
+        query_type=state.get("query_type"),
+    )
     if int(state.get("error_count", 0)) >= settings.max_error_count:
+        log.warning("planner_node_max_errors_reached", max_error_count=settings.max_error_count)
         return {
             "next_node": "summarizer",
             "warnings": ["Достигнут лимит ошибок оркестратора, включена безопасная деградация."],
@@ -414,8 +434,10 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
             llm_plan = _try_llm_plan(state)
         except Exception:
             llm_plan = None
+            log.warning("planner_llm_plan_failed_fallback")
 
         schema = llm_plan or _build_fallback_plan(state)
+        log.info("planner_plan_source_selected", source="llm" if llm_plan else "fallback")
         normalized_plan = [item.model_dump() for item in schema.steps]
         normalized_plan = _sanitize_plan_steps(
             steps=normalized_plan,
@@ -425,6 +447,7 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         if len(normalized_plan) > 10:
             normalized_plan = normalized_plan[:10]
         next_node = normalized_plan[0]["target_server"] if normalized_plan else "summarizer"
+        log.info("planner_plan_built", next_node=next_node, steps_count=len(normalized_plan))
         return {
             "plan": normalized_plan,
             "current_step": 0,
@@ -432,11 +455,18 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         }
 
     if current_step >= len(plan) or current_step >= 10:
+        log.info("planner_node_route_summarizer_end_of_plan", current_step=current_step, plan_steps=len(plan))
         return {"next_node": "summarizer"}
 
     step = plan[current_step]
     target = step.get("target_server", "summarizer")
     if target not in {"market_executor", "news_executor", "analytics_executor", "summarizer"}:
         target = "summarizer"
+    log.info(
+        "planner_node_routed",
+        current_step=current_step,
+        target=target,
+        tool_name=step.get("tool_name"),
+    )
     return {"next_node": target}
 

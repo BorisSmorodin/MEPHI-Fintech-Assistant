@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+import structlog
 
 from config.settings import get_settings
 from orchestrator.nodes.analytics_executor import analytics_executor
@@ -21,6 +22,8 @@ from orchestrator.quality_metrics import (
 )
 from orchestrator.nodes.summarizer_node import summarizer_node
 from orchestrator.state import InvestmentAssistantState, initial_state
+
+log = structlog.get_logger()
 
 
 def build_graph():
@@ -69,12 +72,21 @@ async def run_query(
     payload = initial_state(user_query=user_query)
     if state_overrides:
         payload.update(state_overrides)
+    thread_id = f"thread-{uuid4()}"
+    log.info(
+        "orchestrator_run_started",
+        user_query=user_query,
+        scenario_name=scenario_name,
+        override_keys=sorted(list(state_overrides.keys())) if state_overrides else [],
+        recursion_limit=settings.max_recursion,
+        thread_id=thread_id,
+    )
     started_at = time.perf_counter()
     result = await graph.ainvoke(
         payload,
         config={
             "recursion_limit": settings.max_recursion,
-            "configurable": {"thread_id": f"thread-{uuid4()}"},
+            "configurable": {"thread_id": thread_id},
         },
     )
     output_state = dict(result)
@@ -87,6 +99,16 @@ async def run_query(
         expected_servers=expected_servers,
     )
     output_state["quality_metrics"] = quality_metrics
+    log.info(
+        "orchestrator_run_completed",
+        scenario_name=scenario_name,
+        elapsed_sec=round(elapsed_sec, 6),
+        query_type=output_state.get("query_type"),
+        error_count=output_state.get("error_count"),
+        warnings_count=len(output_state.get("warnings", [])),
+        plan_steps=len(output_state.get("plan", [])),
+        thread_id=thread_id,
+    )
 
     should_persist = settings.quality_metrics_enable_file if persist_metrics is None else persist_metrics
     if should_persist:

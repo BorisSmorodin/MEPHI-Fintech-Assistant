@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.messages import AIMessage
+import structlog
 
 from config.settings import get_settings
 from orchestrator.mcp_client import MCPClientError, get_mcp_client
 
+log = structlog.get_logger()
 ALLOWED_ANALYTICS_TOOLS = {
     "get_portfolio_summary",
     "calculate_risk_metrics",
@@ -100,6 +102,7 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
 
     tool_name = str(step.get("tool_name", ""))
     tool_args = dict(step.get("tool_args", {}))
+    log.info("analytics_executor_step_started", current_step=current_step, tool_name=tool_name, tool_args=tool_args)
     if tool_name not in ALLOWED_ANALYTICS_TOOLS:
         return {
             "error_count": int(state.get("error_count", 0)) + 1,
@@ -118,6 +121,12 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
     warnings = list(state.get("warnings", []))
     if normalization_warning:
         warnings.append(normalization_warning)
+        log.info(
+            "analytics_executor_args_normalized",
+            tool_name=tool_name,
+            normalized_tool_args=normalized_tool_args,
+            warning=normalization_warning,
+        )
 
     try:
         result = await client.call_tool(tool_name, normalized_tool_args)
@@ -135,9 +144,15 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
                 *warnings,
                 "Не удалось получить риск-метрики в полном объеме.",
             ]
+        log.info(
+            "analytics_executor_step_succeeded",
+            tool_name=tool_name,
+            warnings_count=len(response.get("warnings", [])),
+        )
         return response
     except MCPClientError as error:
         metrics = dict(state.get("portfolio_metrics", {}))
+        log.warning("analytics_executor_step_failed", tool_name=tool_name, error=str(error))
         if tool_name == "calculate_risk_metrics":
             try:
                 fallback_payload = await client.call_tool(
@@ -156,6 +171,7 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
                     "messages": [AIMessage(content=f"Fallback analytics path used: {error}")],
                 }
             except Exception:
+                log.warning("analytics_executor_fallback_failed", tool_name=tool_name)
                 pass
 
         warnings.append("Часть аналитических данных недоступна, точность оценки риска снижена.")
@@ -167,6 +183,7 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
         }
     except Exception as error:
         metrics = dict(state.get("portfolio_metrics", {}))
+        log.warning("analytics_executor_step_failed", tool_name=tool_name, error=str(error))
         if tool_name == "calculate_risk_metrics":
             try:
                 fallback_payload = await client.call_tool(
@@ -185,6 +202,7 @@ async def analytics_executor(state: dict[str, Any]) -> dict[str, Any]:
                     "messages": [AIMessage(content=f"Fallback analytics path used: {error}")],
                 }
             except Exception:
+                log.warning("analytics_executor_fallback_failed", tool_name=tool_name)
                 pass
         warnings.append("Часть аналитических данных недоступна, точность оценки риска снижена.")
         return {

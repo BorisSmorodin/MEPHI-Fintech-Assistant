@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage
+import structlog
 
 from orchestrator.state import QueryType
 
@@ -25,6 +26,7 @@ COMPANY_TICKER_HINTS: dict[str, str] = {
     "норникель": "GMKN",
     "яндекс": "YDEX",
 }
+log = structlog.get_logger()
 
 
 def _classify_query_type(query: str) -> QueryType:
@@ -68,6 +70,12 @@ async def input_node(state: dict[str, Any]) -> dict[str, Any]:
             extracted_tickers.add(ticker)
     normalized_tickers = sorted(extracted_tickers)
     query_type = _classify_query_type(user_query)
+    log.info(
+        "input_node_classified",
+        query_type=query_type,
+        extracted_tickers=normalized_tickers,
+        query_length=len(user_query),
+    )
     return {
         "user_query": user_query,
         "query_type": query_type,
