@@ -23,7 +23,11 @@ def test_chat_clear_resets_last_state(monkeypatch) -> None:
     def _fake_prompt(_text: str) -> str:
         return next(inputs)
 
-    def _fake_execute_query_sync(_query: str) -> dict[str, Any]:
+    def _fake_execute_query_sync(
+        _query: str,
+        *,
+        state_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "query_type": "market_monitor",
             "error_count": 0,

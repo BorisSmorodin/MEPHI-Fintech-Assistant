@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -13,6 +13,8 @@ QueryType = Literal[
     "portfolio_holdings",
     "complex",
 ]
+
+AnswerDepth = Literal["compact", "standard"]
 ExecutorTarget = Literal["market_executor", "news_executor", "analytics_executor", "summarizer"]
 
 
@@ -43,6 +45,7 @@ class InvestmentAssistantState(TypedDict):
     extracted_tickers: list[str]
     warnings: list[str]
     investment_decision_intent: bool
+    answer_depth: NotRequired[AnswerDepth]
 
 
 def initial_state(user_query: str = "") -> InvestmentAssistantState:

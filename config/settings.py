@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     max_error_count: int = 3
     quality_metrics_path: str = "data/fixtures/quality_metrics.jsonl"
     quality_metrics_enable_file: bool = False
+    # Суммаризация: для complex с риском и рынком/новостями — компактная интерпретация (см. summarizer_node)
+    summary_prefer_compact_for_complex: bool = Field(default=True, alias="SUMMARY_PREFER_COMPACT_FOR_COMPLEX")
 
     # Dev
     use_mock_clickhouse: bool = False

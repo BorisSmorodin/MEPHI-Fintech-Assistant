@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 import typer
@@ -23,10 +23,26 @@ class CLICommandResult:
     message: str | None = None
 
 
-def execute_query_sync(user_query: str) -> dict[str, Any]:
+def execute_query_sync(
+    user_query: str,
+    *,
+    state_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Выполняет запрос к оркестратору в синхронной оболочке."""
     log.info("cli_query_execute", user_query=user_query)
-    return asyncio.run(run_query(user_query))
+    return asyncio.run(run_query(user_query, state_overrides=state_overrides))
+
+
+def _answer_depth_overrides(answer_depth: str | None) -> dict[str, Any] | None:
+    """Преобразует опцию CLI в state_overrides для summarizer."""
+    normalized = (answer_depth or "").strip().lower()
+    if normalized in ("", "auto"):
+        return None
+    if normalized == "compact":
+        return {"answer_depth": "compact"}
+    if normalized == "standard":
+        return {"answer_depth": "standard"}
+    raise typer.BadParameter("ожидается auto, compact или standard")
 
 
 def format_debug_payload(state: dict[str, Any] | None) -> str:
@@ -63,8 +79,22 @@ def process_cli_input(user_input: str, last_state: dict[str, Any] | None) -> CLI
 
 
 @app.command()
-def chat() -> None:
+def chat(
+    answer_depth: Annotated[
+        str | None,
+        typer.Option(
+            "--answer-depth",
+            help="Глубина суммаризации: auto (эвристика), compact или standard.",
+        ),
+    ] = None,
+) -> None:
     """Запускает REPL-чат для работы с оркестратором."""
+    try:
+        session_overrides = _answer_depth_overrides(answer_depth)
+    except typer.BadParameter as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
     typer.echo("Investment Assistant CLI. Команды: exit, clear, debug.")
     last_state: dict[str, Any] | None = None
 
@@ -87,7 +117,10 @@ def chat() -> None:
             continue
 
         try:
-            state = execute_query_sync(command_result.message or "")
+            state = execute_query_sync(
+                command_result.message or "",
+                state_overrides=session_overrides,
+            )
             last_state = state
             final_answer = str(state.get("final_answer") or "").strip()
             if final_answer:

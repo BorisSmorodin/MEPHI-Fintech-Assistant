@@ -9,6 +9,9 @@ from typing import Any
 from langchain_core.messages import AIMessage
 import structlog
 
+from config.settings import get_settings
+from orchestrator.state import AnswerDepth
+
 log = structlog.get_logger()
 
 
@@ -133,6 +136,15 @@ def _format_float(value: float | None, *, suffix: str = "", scale: float = 1.0) 
         return "н/д"
     normalized = value * scale
     return f"{normalized:,.2f}{suffix}".replace(",", " ")
+
+
+def _normalize_hint_text(value: Any, *, fallback: str = "") -> str:
+    """Нормализует текст-подсказку: убирает хвостовую пунктуацию и пустые значения."""
+    if not isinstance(value, str):
+        return fallback
+    text = " ".join(value.strip().split())
+    text = text.rstrip(" .,:;")
+    return text or fallback
 
 
 def _coerce_candle_rows(raw: Any) -> list[dict[str, Any]]:
@@ -405,7 +417,99 @@ def _interpret_stress_block(stress: dict[str, Any]) -> str:
     return "".join(parts).strip()
 
 
-def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
+def _interpret_risk_metrics_block_compact(risk: dict[str, Any]) -> str:
+    """Краткая связка метрик риска без определений VaR/CVaR (числа — в «Основных показателях»)."""
+    chunks: list[str] = []
+    var_hist = risk.get("var_historical") if isinstance(risk.get("var_historical"), dict) else {}
+    var_param = risk.get("var_parametric") if isinstance(risk.get("var_parametric"), dict) else {}
+    cvar_block = risk.get("cvar") if isinstance(risk.get("cvar"), dict) else {}
+
+    vh = _as_float(var_hist.get("value_pct")) if var_hist else None
+    vp = _as_float(var_param.get("value_pct")) if var_param else None
+    vc = _as_float(cvar_block.get("value_pct")) if cvar_block else None
+
+    tail_bits: list[str] = []
+    if vh is not None and vp is not None and max(vh, vp) > 1e-12:
+        rel_diff = abs(vh - vp) / max(vh, vp)
+        if rel_diff < 0.12:
+            tail_bits.append("исторический и параметрический VaR согласованы по порядку")
+        else:
+            tail_bits.append("оценки VaR расходятся — смотрите обе")
+    if vc is not None and vh is not None and vh > 1e-12:
+        tail_ratio = vc / vh
+        if tail_ratio > 1.2:
+            tail_bits.append("хвост тяжёлый: CVaR заметно выше VaR")
+        elif tail_ratio > 1.05:
+            tail_bits.append("CVaR умеренно выше VaR")
+        else:
+            tail_bits.append("CVaR близок к VaR по хвосту")
+    if tail_bits:
+        chunks.append(
+            "Потери и хвост: "
+            + "; ".join(tail_bits)
+            + ". Конкретные проценты смотрите в блоке «Основные показатели»."
+        )
+
+    vol = risk.get("volatility")
+    sharpe = risk.get("sharpe")
+    if isinstance(vol, dict):
+        va = _as_float(vol.get("value_annual"))
+        vol_hint_s = _normalize_hint_text(vol.get("interpretation"))
+        sharpe_val = _as_float(sharpe.get("value")) if isinstance(sharpe, dict) else None
+        sharpe_hint_s = (
+            _normalize_hint_text(sharpe.get("interpretation"))
+            if isinstance(sharpe, dict)
+            else ""
+        )
+        one_line = ["Волатильность/Шарп (детали выше)."]
+        if vol_hint_s:
+            one_line.append(vol_hint_s)
+        if va is not None:
+            one_line.append("масштаб колебаний задаёт годовая волатильность из таблицы")
+        if sharpe_val is not None and sharpe_hint_s:
+            one_line.append(f"Шарп: {sharpe_hint_s}")
+        elif sharpe_val is not None and sharpe_val < 0:
+            one_line.append("отрицательный Шарп — доходность не окупала риск на горизонте оценки")
+        chunks.append(" ".join(one_line))
+
+    mdd_block = risk.get("max_drawdown")
+    if isinstance(mdd_block, dict):
+        mdv = _as_float(mdd_block.get("value"))
+        if mdv is not None:
+            chunks.append(
+                "Просадка Max Drawdown — по кривой капитала, шире однодневного VaR; величина в таблице."
+            )
+
+    hhi = risk.get("hhi")
+    if isinstance(hhi, dict):
+        pos = hhi.get("positions") if isinstance(hhi.get("positions"), dict) else None
+        sec = hhi.get("sectors") if isinstance(hhi.get("sectors"), dict) else None
+        bits: list[str] = []
+        if isinstance(pos, dict):
+            hv = _as_float(pos.get("value"))
+            hi = _normalize_hint_text(pos.get("interpretation"), fallback="оценка")
+            if hv is not None:
+                bits.append(
+                    f"HHI по позициям {_format_float(hv)}"
+                    f" ({hi})"
+                )
+        if isinstance(sec, dict):
+            sv = _as_float(sec.get("value"))
+            si = _normalize_hint_text(sec.get("interpretation"), fallback="оценка")
+            if sv is not None:
+                bits.append(
+                    f"по секторам {_format_float(sv)}"
+                    f" ({si})"
+                )
+        if bits:
+            chunks.append("Концентрация: " + "; ".join(bits) + ".")
+
+    if not chunks:
+        return "Риск-метрики получены; детали — в «Основных показателях»."
+    return "\n\n".join(chunks)
+
+
+def _interpret_risk_metrics_block_standard(risk: dict[str, Any]) -> str:
     """Интерпретация по calculate_risk_metrics: связи между метриками, не дублирование таблицы цифр."""
     paragraphs: list[str] = []
 
@@ -422,8 +526,8 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
     # --- VaR / CVaR: смысл и взаимосвязи (цифры уже в «Основных показателях»).
     if vh is not None or vp is not None or vc is not None:
         var_lines: list[str] = [
-            f"Потери и хвост распределения (VaR / CVaR, доверие {conf_label}). "
-            f"VaR отвечает на вопрос «какой однодневной убыток не должен превышаться в большинстве дней»; "
+            f"Потери и хвост распределения (VaR / CVaR, уровень доверия {conf_label}). "
+            f"VaR отвечает на вопрос «какой однодневный убыток не должен превышаться в большинстве дней»; "
             f"CVaR описывает среднюю тяжесть дней ещё хуже этого порога — это риск «второго порядка», важный для лимитов и капитала."
         ]
         if vh is not None and vp is not None and max(vh, vp) > 1e-12:
@@ -459,15 +563,17 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
     sharpe = risk.get("sharpe")
     if isinstance(vol, dict):
         va = _as_float(vol.get("value_annual"))
-        vol_hint = vol.get("interpretation")
-        vol_hint_s = str(vol_hint).strip() if isinstance(vol_hint, str) else ""
+        vol_hint_s = _normalize_hint_text(vol.get("interpretation"))
         sharpe_val = _as_float(sharpe.get("value")) if isinstance(sharpe, dict) else None
-        sharpe_hint = sharpe.get("interpretation") if isinstance(sharpe, dict) else None
-        sharpe_hint_s = str(sharpe_hint).strip() if isinstance(sharpe_hint, str) else ""
+        sharpe_hint_s = (
+            _normalize_hint_text(sharpe.get("interpretation"))
+            if isinstance(sharpe, dict)
+            else ""
+        )
 
         vol_para: list[str] = ["Волатильность и доходность на единицу риска."]
         if vol_hint_s:
-            vol_para.append(f"{vol_hint_s}")
+            vol_para.append(vol_hint_s + ".")
         if va is not None:
             vol_para.append(
                 "Годовая волатильность задаёт масштаб колебаний стоимости: чем она выше, тем шире диапазон типичных дневных движений "
@@ -475,7 +581,7 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
             )
         if sharpe_val is not None:
             if sharpe_hint_s:
-                vol_para.append(f"Коэффициент Шарпа: {sharpe_hint_s}")
+                vol_para.append(f"Коэффициент Шарпа: {sharpe_hint_s}.")
             if sharpe_val < 0:
                 vol_para.append(
                     "Отрицательный Шарп означает, что на горизонте оценки доходность не компенсировала принятый риск и безрисковую ставку — "
@@ -489,11 +595,10 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
 
     elif isinstance(sharpe, dict):
         sharpe_val = _as_float(sharpe.get("value"))
-        sharpe_hint = sharpe.get("interpretation")
-        sharpe_hint_s = str(sharpe_hint).strip() if isinstance(sharpe_hint, str) else ""
+        sharpe_hint_s = _normalize_hint_text(sharpe.get("interpretation"))
         sp: list[str] = ["Доходность на единицу риска (Шарп)."]
         if sharpe_hint_s:
-            sp.append(sharpe_hint_s)
+            sp.append(sharpe_hint_s + ".")
         if sharpe_val is not None:
             if sharpe_val < 0:
                 sp.append(
@@ -523,19 +628,19 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
         hhi_parts: list[str] = ["Концентрация (HHI)."]
         if isinstance(pos, dict):
             hv = _as_float(pos.get("value"))
-            hi = pos.get("interpretation")
+            hi = _normalize_hint_text(pos.get("interpretation"), fallback="оценка концентрации")
             if hv is not None:
                 hhi_parts.append(
-                    f"По позициям HHI = {_format_float(hv)} ({str(hi).strip() if isinstance(hi, str) else 'оценка концентрации'}). "
+                    f"По позициям HHI = {_format_float(hv)} ({hi}). "
                     "Чем выше HHI, тем больше доля портфеля сосредоточена в нескольких бумагах и тем сильнее вклад идосинкратического риска; "
                     "чем ниже — тем ближе к равным весам по числу имён (при прочих равных)."
                 )
         if isinstance(sec, dict):
             sv = _as_float(sec.get("value"))
-            si = sec.get("interpretation")
+            si = _normalize_hint_text(sec.get("interpretation"), fallback="оценка концентрации")
             if sv is not None:
                 hhi_parts.append(
-                    f"По секторам HHI = {_format_float(sv)} ({str(si).strip() if isinstance(si, str) else 'оценка концентрации'}). "
+                    f"По секторам HHI = {_format_float(sv)} ({si}). "
                     "Высокая отраслевая концентрация усиливает чувствительность к отраслевым шокам и «кластерным» просадкам."
                 )
         if len(hhi_parts) > 1:
@@ -544,6 +649,15 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
     if not paragraphs:
         return "Риск-метрики получены; для развёрнутой интерпретации нужны заполненные поля VaR, волатильности и HHI в ответе инструмента."
     return "\n\n".join(paragraphs)
+
+
+def _interpret_risk_metrics_block(
+    risk: dict[str, Any], *, depth: AnswerDepth = "standard"
+) -> str:
+    """Интерпретация по calculate_risk_metrics: полная или компактная в зависимости от depth."""
+    if depth == "compact":
+        return _interpret_risk_metrics_block_compact(risk)
+    return _interpret_risk_metrics_block_standard(risk)
 
 
 def _news_trust_hint(news_data: list[dict[str, Any]]) -> str | None:
@@ -596,10 +710,77 @@ def _describe_available_and_missing_blocks(
     return " ".join(parts).strip()
 
 
+def _resolve_answer_depth(
+    state: dict[str, Any],
+    *,
+    query_type: str,
+    has_risk: bool,
+    has_market: bool,
+    has_news: bool,
+) -> tuple[AnswerDepth, str]:
+    """Возвращает глубину суммаризации и метку сценария для логов."""
+    raw = state.get("answer_depth")
+    if raw == "compact" or raw == "standard":
+        return raw, "explicit_override"
+    settings = get_settings()
+    if query_type == "risk_assessment" and has_risk:
+        return "standard", "risk_metrics_only"
+    if (
+        query_type == "complex"
+        and has_risk
+        and (has_market or has_news)
+        and settings.summary_prefer_compact_for_complex
+    ):
+        return "compact", "complex_portfolio_context"
+    if query_type == "complex" and has_risk:
+        return "standard", "complex_risk_only"
+    return "standard", "default"
+
+
+def _glue_quote_position_to_portfolio(
+    market_data: dict[str, Any],
+    portfolio_metrics: dict[str, Any],
+) -> str | None:
+    """Связка тикера котировки с долей в get_portfolio_summary (без LLM)."""
+    quote = _find_payload_dict(market_data.get("get_stock_quote"))
+    summary = _find_payload_dict(portfolio_metrics.get("get_portfolio_summary"))
+    if not isinstance(quote, dict):
+        return None
+    secid = str(quote.get("SECID") or quote.get("ticker") or "").strip().upper()
+    if not secid:
+        return None
+    if not isinstance(summary, dict):
+        return (
+            f"Котировка {secid}: снимок цены; агрегированные метрики риска относятся ко всему портфелю."
+        )
+    positions = summary.get("positions")
+    if not isinstance(positions, list):
+        return (
+            f"Котировка {secid}: снимок цены; агрегированные метрики риска относятся ко всему портфелю."
+        )
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("ticker", "")).strip().upper()
+        if t == secid:
+            w = _as_float(row.get("weight"))
+            sec = str(row.get("sector", "н/д")).strip()
+            w_label = f"{w * 100:.2f}%" if w is not None else "н/д"
+            return (
+                f"Доля {secid} в портфеле около {w_label} (сектор: {sec}); VaR/CVaR и волатильность в ответе — "
+                "по портфелю в целом, не по одной бумаге."
+            )
+    return (
+        f"Тикер {secid} из котировки не найден в сводке позиций; цена — рыночный контекст, метрики риска — по портфелю целиком."
+    )
+
+
 def _interpret_complex_query(
     portfolio_metrics: dict[str, Any],
     news_data: list[dict[str, Any]],
+    market_data: dict[str, Any],
     *,
+    depth: AnswerDepth,
     has_market: bool,
     has_news: bool,
     has_risk: bool,
@@ -614,26 +795,45 @@ def _interpret_complex_query(
     if isinstance(stress, dict):
         parts.append(_interpret_stress_block(stress))
     if isinstance(risk, dict):
-        parts.append(_interpret_risk_metrics_block(risk))
+        parts.append(_interpret_risk_metrics_block(risk, depth=depth))
 
-    if has_holdings and isinstance(_find_payload_dict(portfolio_metrics.get("get_portfolio_summary")), dict):
-        parts.append(
-            "Состав портфеля задаёт фактическую экспозицию по бумагам и секторам; сопоставляйте доли с HHI и отраслевой концентрацией при чтении новостей и агрегированных метрик риска."
-        )
+    summary_payload = _find_payload_dict(portfolio_metrics.get("get_portfolio_summary"))
+    if has_holdings and isinstance(summary_payload, dict):
+        glue = _glue_quote_position_to_portfolio(market_data, portfolio_metrics)
+        if depth == "compact" and glue:
+            parts.append(glue)
+        elif depth == "compact":
+            parts.append(
+                "Состав задаёт экспозицию по бумагам и секторам; сопоставляйте доли с HHI и метриками риска."
+            )
+        else:
+            parts.append(
+                "Состав портфеля задаёт фактическую экспозицию по бумагам и секторам; сопоставляйте доли с HHI и отраслевой концентрацией при чтении новостей и агрегированных метрик риска."
+            )
 
     if has_news:
         hint = _news_trust_hint(news_data)
-        news_para = (
-            "Новостной фон даёт качественный контекст по эмитенту или теме; оценивайте материальность через долю позиции и надёжность источника. "
-        )
-        if hint:
-            news_para += hint
+        if depth == "compact":
+            news_para = "Новости — качественный слой к таблице; вес события оценивайте по доле позиции/сектора."
+            if hint:
+                news_para += " " + hint
+        else:
+            news_para = (
+                "Новостной фон даёт качественный контекст по эмитенту или теме; оценивайте материальность через долю позиции и надёжность источника. "
+            )
+            if hint:
+                news_para += hint
         parts.append(news_para.strip())
 
     if has_market and has_quote:
-        parts.append(
-            "Котировка в ответе — срез цены на момент запроса; VaR, волатильность и просадка относятся к портфелю в целом на историческом горизонте и не эквивалентны сценарию движения одной бумаги без отдельных допущений."
-        )
+        if depth == "compact":
+            parts.append(
+                "Котировка — снимок цены; VaR, просадка и волатильность — по портфелю на истории, не сценарий одной бумаги."
+            )
+        else:
+            parts.append(
+                "Котировка в ответе — срез цены на момент запроса; VaR, волатильность и просадка относятся к портфелю в целом на историческом горизонте и не эквивалентны сценарию движения одной бумаги без отдельных допущений."
+            )
 
     if not parts:
         return None
@@ -652,6 +852,8 @@ def _build_interpretation(
     investment_decision_intent: bool,
     portfolio_metrics: dict[str, Any],
     news_data: list[dict[str, Any]],
+    market_data: dict[str, Any],
+    answer_depth: AnswerDepth,
 ) -> str:
     """Формирует интерпретацию: опирается на фактические payload инструментов, не только на тип запроса."""
     stress = _find_payload_dict(portfolio_metrics.get("run_stress_test"))
@@ -660,11 +862,14 @@ def _build_interpretation(
     if isinstance(stress, dict) and query_type == "risk_assessment":
         base = _interpret_stress_block(stress)
         if isinstance(risk, dict):
-            base += " Дополнительно: " + _interpret_risk_metrics_block(risk)
+            base += "\n\nДополнительно по риск-метрикам:\n" + _interpret_risk_metrics_block(
+                risk,
+                depth=answer_depth,
+            )
         return base
 
     if isinstance(risk, dict) and query_type == "risk_assessment":
-        return _interpret_risk_metrics_block(risk)
+        return _interpret_risk_metrics_block(risk, depth=answer_depth)
 
     if investment_decision_intent:
         coverage = _describe_available_and_missing_blocks(
@@ -684,6 +889,8 @@ def _build_interpretation(
         complex_text = _interpret_complex_query(
             portfolio_metrics,
             news_data,
+            market_data,
+            depth=answer_depth,
             has_market=has_market,
             has_news=has_news,
             has_risk=has_risk,
@@ -746,6 +953,7 @@ def _build_conclusion(
     has_news: bool,
     has_risk_lines: bool,
     investment_decision_intent: bool,
+    answer_depth: AnswerDepth,
 ) -> list[str]:
     """Практические шаги: приоритет — специфика стресс-теста и риск-метрик, иначе — тип запроса."""
     lines: list[str] = []
@@ -811,9 +1019,22 @@ def _build_conclusion(
     elif query_type == "risk_assessment" and has_risk_lines:
         lines.append("- Сверьте риск-метрики с внутренними лимитами и стресс-сценариями, зафиксированными в вашей политике.")
     elif query_type == "complex" and (has_market or has_news or has_risk_lines):
-        lines.append(
-            "- Сведите воедино цену, новости и (если есть) риск: решения по весам согласуйте с горизонтом и лимитами."
-        )
+        if (
+            answer_depth == "compact"
+            and has_risk_lines
+            and (has_market or has_news)
+        ):
+            lines.append(
+                "- Сверьте VaR, CVaR и HHI с внутренними лимитами; отрицательный Шарп и глубина просадки задают планку "
+                "осторожности при смене весов."
+            )
+            lines.append(
+                "- Новости трактуйте как качественный контекст; материальность события сопоставляйте с долей инструмента или сектора в портфеле."
+            )
+        else:
+            lines.append(
+                "- Сведите воедино цену, новости и (если есть) риск: решения по весам согласуйте с горизонтом и лимитами."
+            )
     else:
         lines.append(
             "- Уточните запрос (тикер, портфель, горизонт) и при необходимости повторите после восстановления источников данных."
@@ -826,7 +1047,7 @@ def _build_conclusion(
     return lines
 
 
-def _format_summary(state: dict[str, Any]) -> str:
+def _format_summary(state: dict[str, Any]) -> tuple[str, AnswerDepth, str]:
     """Формирует структурированный итоговый ответ без внешних вызовов."""
     user_query = str(state.get("user_query", "")).strip() or "Запрос не указан."
     query_type = str(state.get("query_type", "complex"))
@@ -850,6 +1071,13 @@ def _format_summary(state: dict[str, Any]) -> str:
     has_quote = isinstance(quote_payload, dict)
     has_candles_data = bool(_coerce_candle_rows(market_data.get("get_candles")))
     investment_decision_intent = bool(state.get("investment_decision_intent"))
+    answer_depth, summary_scenario = _resolve_answer_depth(
+        state,
+        query_type=query_type,
+        has_risk=has_risk,
+        has_market=has_market,
+        has_news=has_news,
+    )
     interpretation = _build_interpretation(
         query_type=query_type,
         has_market=has_market,
@@ -861,6 +1089,8 @@ def _format_summary(state: dict[str, Any]) -> str:
         investment_decision_intent=investment_decision_intent,
         portfolio_metrics=portfolio_metrics,
         news_data=news_data,
+        market_data=market_data,
+        answer_depth=answer_depth,
     )
     conclusion_lines = _build_conclusion(
         query_type=query_type,
@@ -871,19 +1101,41 @@ def _format_summary(state: dict[str, Any]) -> str:
         has_news=has_news,
         has_risk_lines=has_risk,
         investment_decision_intent=investment_decision_intent,
+        answer_depth=answer_depth,
     )
 
     lines = ["## Итоговый анализ", "", "### Что запросил пользователь", f"- {user_query}", "", "### Основные показатели"]
-    if has_market:
-        lines.extend(market_lines)
-    if has_news:
-        lines.extend(news_lines)
-    if has_holdings:
-        lines.extend(holdings_lines)
-    if has_risk:
-        lines.extend(risk_lines)
-    if not (has_market or has_news or has_holdings or has_risk):
-        lines.append("- Недостаточно данных для содержательного ответа по запросу.")
+    if query_type == "complex":
+        section_added = False
+        if has_market:
+            lines.extend(["#### Цена и рынок"])
+            lines.extend(market_lines)
+            section_added = True
+        if has_news:
+            lines.extend(["", "#### Новости"])
+            lines.extend(news_lines)
+            section_added = True
+        if has_holdings:
+            lines.extend(["", "#### Состав портфеля"])
+            lines.extend(holdings_lines)
+            section_added = True
+        if has_risk:
+            lines.extend(["", "#### Ключевые метрики риска"])
+            lines.extend(risk_lines)
+            section_added = True
+        if not section_added:
+            lines.append("- Недостаточно данных для содержательного ответа по запросу.")
+    else:
+        if has_market:
+            lines.extend(market_lines)
+        if has_news:
+            lines.extend(news_lines)
+        if has_holdings:
+            lines.extend(holdings_lines)
+        if has_risk:
+            lines.extend(risk_lines)
+        if not (has_market or has_news or has_holdings or has_risk):
+            lines.append("- Недостаточно данных для содержательного ответа по запросу.")
 
     lines.extend(["", "### Интерпретация", interpretation])
     if warnings:
@@ -893,7 +1145,7 @@ def _format_summary(state: dict[str, Any]) -> str:
 
     lines.extend(["", "### Практический вывод"])
     lines.extend(conclusion_lines)
-    return "\n".join(lines)
+    return "\n".join(lines), answer_depth, summary_scenario
 
 
 async def summarizer_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -906,8 +1158,13 @@ async def summarizer_node(state: dict[str, Any]) -> dict[str, Any]:
         portfolio_keys=sorted(list(dict(state.get("portfolio_metrics", {})).keys())),
         warnings_count=len(list(state.get("warnings", []))),
     )
-    final_answer = _format_summary(state)
-    log.info("summarizer_node_completed", final_answer_length=len(final_answer))
+    final_answer, answer_depth_resolved, summary_scenario = _format_summary(state)
+    log.info(
+        "summarizer_node_completed",
+        final_answer_length=len(final_answer),
+        answer_depth_resolved=answer_depth_resolved,
+        summary_scenario=summary_scenario,
+    )
     return {
         "final_answer": final_answer,
         "messages": [AIMessage(content=final_answer)],

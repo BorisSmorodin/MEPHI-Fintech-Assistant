@@ -29,10 +29,14 @@ async def execute_streamlit_query(
     user_query: str,
     portfolio_id: str,
     selected_model: str,
+    answer_depth: str | None = None,
 ) -> dict[str, Any]:
     """Выполняет запрос оркестратора для Streamlit-страницы."""
     effective_query = build_effective_query(user_query, portfolio_id)
-    result = await run_query(effective_query)
+    overrides: dict[str, Any] | None = None
+    if answer_depth in ("compact", "standard"):
+        overrides = {"answer_depth": answer_depth}
+    result = await run_query(effective_query, state_overrides=overrides)
 
     warnings = list(result.get("warnings", []))
     if selected_model:
@@ -78,6 +82,12 @@ def main() -> None:
             index=0,
         )
         st.caption("Выбор модели сохраняется как UI preference.")
+        answer_depth_ui = st.selectbox(
+            "Глубина суммаризации",
+            options=["auto", "compact", "standard"],
+            index=0,
+            help="auto: эвристика (complex+риск+рынок/новости — компактно). compact/standard — принудительно.",
+        )
 
     user_query = st.text_area("Введите запрос", placeholder="Например: Оцени риск портфеля demo_portfolio")
     run_clicked = st.button("Запустить анализ", type="primary")
@@ -90,11 +100,13 @@ def main() -> None:
                 st.error("Длина запроса не должна превышать 2000 символов.")
             else:
                 with st.spinner("Выполняется анализ..."):
+                    depth_arg = None if answer_depth_ui == "auto" else answer_depth_ui
                     state = asyncio.run(
                         execute_streamlit_query(
                             user_query=user_query,
                             portfolio_id=portfolio_id,
                             selected_model=selected_model,
+                            answer_depth=depth_arg,
                         )
                     )
                 st.session_state["last_state"] = state

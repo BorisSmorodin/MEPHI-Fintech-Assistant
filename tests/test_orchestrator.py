@@ -639,10 +639,130 @@ async def test_summarizer_complex_interpretation_links_risk_news_quote() -> None
     }
     result = await summarizer_node(state)
     text = result["final_answer"] or ""
-    assert "Потери и хвост распределения" in text
+    assert "Потери и хвост" in text
+    assert "VaR отвечает на вопрос" not in text
     assert "Запрос обработан как комплексный" not in text
-    assert "Новостной фон" in text
-    assert "Котировка в ответе" in text
+    assert "Новости — качественный слой" in text
+    assert "Котировка — снимок цены" in text
+    assert "Сверьте VaR, CVaR и HHI" in text
+    assert "Доля GAZP в портфеле" in text
+
+
+@pytest.mark.asyncio
+async def test_summarizer_complex_answer_depth_standard_restores_full_risk_narrative() -> None:
+    """Явный answer_depth=standard возвращает развёрнутую интерпретацию риска для complex."""
+    state = initial_state("Комплексный запрос с риском")
+    state["query_type"] = "complex"
+    state["answer_depth"] = "standard"
+    state["market_data"] = {
+        "get_stock_quote": {"SECID": "GAZP", "LAST": 128.0, "CHANGE": 0.01, "UPDATETIME": "17:35:11"},
+    }
+    state["news_data"] = [
+        {
+            "title": "Тест",
+            "source": "finam",
+            "source_trust": "MEDIUM",
+            "published": "2026-04-15T14:31:45+00:00",
+            "sentiment": "neutral",
+        }
+    ]
+    state["portfolio_metrics"] = {
+        "get_portfolio_summary": {
+            "portfolio_id": "demo_portfolio",
+            "total_value": 1_000_000.0,
+            "positions": [{"ticker": "GAZP", "weight": 0.05, "market_value": 50_000.0, "sector": "нефтегаз", "instrument_type": "акция"}],
+            "allocation": {"by_sector": {"нефтегаз": 50_000.0}},
+        },
+        "calculate_risk_metrics": {
+            "confidence": 0.95,
+            "var_historical": {"value_pct": 0.0128, "interpretation": "hist"},
+            "var_parametric": {"value_pct": 0.012, "interpretation": "param"},
+            "cvar": {"value_pct": 0.0153, "interpretation": "cvar"},
+            "volatility": {"value_annual": 0.1223, "interpretation": "умеренная"},
+            "sharpe": {"value": -0.25, "interpretation": "низкая"},
+            "max_drawdown": {"value": 0.0951},
+            "hhi": {
+                "positions": {"value": 0.2, "interpretation": "умеренная"},
+                "sectors": {"value": 0.18, "interpretation": "умеренная"},
+            },
+        },
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "Потери и хвост распределения" in text
+    assert "VaR отвечает на вопрос" in text
+    assert "Новостной фон даёт качественный контекст" in text
+
+
+@pytest.mark.asyncio
+async def test_summarizer_complex_main_metrics_are_grouped_by_subheadings() -> None:
+    """В complex-сценарии «Основные показатели» группируются по подзаголовкам ####."""
+    state = initial_state("Комплексный запрос по портфелю и GAZP")
+    state["query_type"] = "complex"
+    state["market_data"] = {
+        "get_stock_quote": {"SECID": "GAZP", "LAST": 128.0, "CHANGE": 0.01, "UPDATETIME": "17:35:11"},
+    }
+    state["news_data"] = [
+        {
+            "title": "Тест новости",
+            "source": "finam",
+            "source_trust": "MEDIUM",
+            "published": "2026-04-15T14:31:45+00:00",
+            "sentiment": "neutral",
+        }
+    ]
+    state["portfolio_metrics"] = {
+        "get_portfolio_summary": {
+            "portfolio_id": "demo_portfolio",
+            "total_value": 1_089_084.3,
+            "positions": [
+                {
+                    "ticker": "GAZP",
+                    "weight": 0.0188,
+                    "market_value": 20_470.19,
+                    "sector": "нефтегаз",
+                    "instrument_type": "акция",
+                }
+            ],
+            "allocation": {"by_sector": {"нефтегаз": 267_670.45}},
+        },
+        "calculate_risk_metrics": {
+            "confidence": 0.95,
+            "var_historical": {"value_pct": 0.0128},
+            "var_parametric": {"value_pct": 0.012},
+            "cvar": {"value_pct": 0.0153},
+            "volatility": {"value_annual": 0.1223},
+            "sharpe": {"value": -0.25},
+            "max_drawdown": {"value": 0.0951},
+            "hhi": {"positions": {"value": 0.2}},
+        },
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "### Основные показатели" in text
+    assert "#### Цена и рынок" in text
+    assert "#### Новости" in text
+    assert "#### Состав портфеля" in text
+    assert "#### Ключевые метрики риска" in text
+
+
+@pytest.mark.asyncio
+async def test_summarizer_non_complex_keeps_main_metrics_without_subheadings() -> None:
+    """Для не-complex сценариев подзаголовки #### в «Основные показатели» не добавляются."""
+    state = initial_state("Оцени риск портфеля demo_portfolio")
+    state["query_type"] = "risk_assessment"
+    state["portfolio_metrics"] = {
+        "calculate_risk_metrics": {
+            "confidence": 0.95,
+            "var_historical": {"value_pct": 0.0128},
+            "var_parametric": {"value_pct": 0.012},
+        }
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "### Основные показатели" in text
+    assert "#### Ключевые метрики риска" not in text
+    assert "#### Цена и рынок" not in text
 
 
 @pytest.mark.asyncio
