@@ -8,11 +8,18 @@ import pytest
 
 from orchestrator.graph import run_query
 from orchestrator.nodes.analytics_executor import analytics_executor
-from orchestrator.nodes.input_node import input_node
+from orchestrator.nodes.input_node import input_node, is_investment_decision_intent
 from orchestrator.nodes.market_executor import market_executor
 from orchestrator.nodes.news_executor import news_executor
-from orchestrator.nodes.planner_node import PlanSchema, PlanStepModel, planner_node, route_planner
+from orchestrator.nodes.planner_node import (
+    PlanSchema,
+    PlanStepModel,
+    _sanitize_plan_steps,
+    planner_node,
+    route_planner,
+)
 from orchestrator.nodes.summarizer_node import _escape_untrusted_text, summarizer_node
+from orchestrator.quality_metrics import collect_quality_metrics
 from orchestrator.state import initial_state
 
 
@@ -581,4 +588,119 @@ async def test_analytics_executor_coerces_stress_magnitude(monkeypatch) -> None:
     assert client.calls
     _tool, args = client.calls[0]
     assert args["magnitude"] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_fallback_plan_skips_analytics_for_investment_ticker_only(monkeypatch) -> None:
+    """Для «стоит ли купить тикер» без портфеля в тексте analytics в fallback не тянем."""
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: None)
+    state = initial_state("Стоит ли покупать GAZP сейчас?")
+    state["query_type"] = "complex"
+    state["extracted_tickers"] = ["GAZP"]
+    result = await planner_node(state)
+    tools = [step["tool_name"] for step in result["plan"]]
+    assert "calculate_risk_metrics" not in tools
+    assert "get_stock_quote" in tools
+    assert "fetch_news" in tools
+
+
+def test_sanitize_plan_strips_get_candles_for_investment_without_history_hint() -> None:
+    """get_candles убирается из плана для инвестиционного вопроса без явной истории цен."""
+    raw = [
+        {
+            "step_number": 1,
+            "description": "q",
+            "target_server": "market_executor",
+            "tool_name": "get_candles",
+            "tool_args": {"ticker": "GAZP"},
+        },
+        {
+            "step_number": 2,
+            "description": "s",
+            "target_server": "summarizer",
+            "tool_name": "summarize",
+            "tool_args": {},
+        },
+    ]
+    out = _sanitize_plan_steps(
+        steps=raw,
+        user_query="Стоит ли покупать GAZP сейчас?",
+        extracted_tickers=["GAZP"],
+    )
+    assert [s["tool_name"] for s in out if s["target_server"] == "market_executor"] == []
+
+
+def test_collect_quality_metrics_investment_intent_does_not_require_analytics() -> None:
+    """Метрика tool_selection: для investment complex достаточно market + news."""
+    state = {
+        "query_type": "complex",
+        "investment_decision_intent": True,
+        "plan": [
+            {
+                "step_number": 1,
+                "target_server": "market_executor",
+                "tool_name": "get_stock_quote",
+                "tool_args": {"ticker": "GAZP"},
+            },
+            {
+                "step_number": 2,
+                "target_server": "news_executor",
+                "tool_name": "fetch_news",
+                "tool_args": {"query": "GAZP"},
+            },
+            {
+                "step_number": 3,
+                "target_server": "summarizer",
+                "tool_name": "summarize",
+                "tool_args": {},
+            },
+        ],
+        "current_step": 2,
+        "final_answer": "ok",
+        "error_count": 0,
+    }
+    record = collect_quality_metrics(
+        state=state,
+        user_query="Стоит ли покупать GAZP?",
+        scenario_name="inv",
+        response_time_sec=0.1,
+    )
+    assert record["tool_selection_correct"] is True
+    assert set(record["expected_servers"]) == {"market", "news"}
+
+
+@pytest.mark.asyncio
+async def test_summarizer_investment_intent_and_candles_line() -> None:
+    """Интерпретация для investment + строка сводки по свечам в основных показателях."""
+    state = initial_state("Стоит ли покупать GAZP сейчас?")
+    state["investment_decision_intent"] = True
+    state["query_type"] = "complex"
+    state["market_data"] = {
+        "get_stock_quote": {"SECID": "GAZP", "LAST": 100.0, "CHANGE": 0.5, "UPDATETIME": "12:00:00"},
+        "get_candles": [
+            {"begin": "2026-04-01T00:00:00", "open": 90.0, "high": 105.0, "low": 88.0, "close": 95.0, "volume": 1.0},
+            {"begin": "2026-04-16T00:00:00", "open": 98.0, "high": 102.0, "low": 97.0, "close": 100.0, "volume": 2.0},
+        ],
+    }
+    state["news_data"] = [
+        {
+            "title": "Тест",
+            "source": "tass",
+            "source_trust": "HIGH",
+            "published": "2026-04-16T10:00:00+00:00",
+            "sentiment": "neutral",
+        }
+    ]
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "покупать / не покупать" in text or "Прямой ответ" in text
+    assert "История цен (дневные свечи" in text
+    assert "Не запрашивалось или недоступно" in text
+    assert "аналитика риска" in text
+
+
+def test_is_investment_decision_intent_detects_phrases() -> None:
+    """Детектор инвестиционного намерения."""
+    assert is_investment_decision_intent("Стоит ли покупать GAZP сейчас?") is True
+    assert is_investment_decision_intent("Покажи котировку SBER") is False
 

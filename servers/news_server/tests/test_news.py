@@ -159,8 +159,8 @@ def test_unavailable_source_fallback(monkeypatch) -> None:
     assert diagnostics["degraded"] is False
 
 
-def test_source_alias_and_recent_fallback(monkeypatch) -> None:
-    """Проверяет alias источника и fallback до recent top-N."""
+def test_source_alias_no_irrelevant_recency_fallback(monkeypatch) -> None:
+    """Alias источника (cbonds→finam); без релевантных совпадений не подставляем случайные топ-N."""
     fetcher = NewsFetcher(settings=_settings(), session=requests.Session())
     monkeypatch.setattr(fetcher.session, "get", lambda *_args, **_kwargs: DummyResponse(content=b"<rss />"))
     monkeypatch.setattr(
@@ -177,9 +177,9 @@ def test_source_alias_and_recent_fallback(monkeypatch) -> None:
         ),
     )
     result = fetcher.fetch_news(query="GAZP", sources=["cbonds"], limit=5)
-    assert len(result) == 1
+    assert len(result) == 0
     diagnostics = fetcher.last_fetch_diagnostics
-    assert diagnostics["fallback_mode"] == "recent_topn"
+    assert diagnostics["fallback_mode"] == "or_query_terms"
 
 
 @pytest.mark.asyncio

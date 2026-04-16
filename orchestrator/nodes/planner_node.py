@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 import structlog
 
 from config.settings import get_settings
+from orchestrator.nodes.input_node import is_explicit_market_history_intent, is_investment_decision_intent
 from orchestrator.prompts import PLANNER_SYSTEM_PROMPT
 
 log = structlog.get_logger()
@@ -277,6 +278,17 @@ def _sanitize_plan_steps(
         normalized_step["tool_args"] = tool_args
         sanitized.append(normalized_step)
 
+    if is_investment_decision_intent(user_query) and not is_explicit_market_history_intent(user_query):
+        before = len(sanitized)
+        sanitized = [step for step in sanitized if str(step.get("tool_name", "")) != "get_candles"]
+        if len(sanitized) < before:
+            log.info(
+                "planner_stripped_optional_candles",
+                user_query_preview=user_query[:120],
+                steps_before=before,
+                steps_after=len(sanitized),
+            )
+
     if not sanitized or sanitized[-1].get("target_server") != "summarizer":
         sanitized.append(
             {
@@ -362,39 +374,46 @@ def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
             step_counter += 1
 
     if query_type in {"risk_assessment", "complex"}:
-        if _is_stress_intent(query):
-            scenario = "index_drop"
-            magnitude = 20.0
-            if "ставк" in query.lower():
-                scenario = "rate_hike"
-                magnitude = 2.0
-            if "сектор" in query.lower():
-                scenario = "sector_decline"
-                magnitude = 15.0
-            steps.append(
-                PlanStepModel(
-                    step_number=step_counter,
-                    description="Провести стресс-тестирование портфеля.",
-                    target_server="analytics_executor",
-                    tool_name="run_stress_test",
-                    tool_args={
-                        "portfolio_id": portfolio_id,
-                        "scenario": scenario,
-                        "magnitude": magnitude,
-                    },
+        skip_analytics_for_ticker_investment = (
+            query_type == "complex"
+            and is_investment_decision_intent(query)
+            and not _is_stress_intent(query)
+            and PORTFOLIO_RE.search(query) is None
+        )
+        if not skip_analytics_for_ticker_investment:
+            if _is_stress_intent(query):
+                scenario = "index_drop"
+                magnitude = 20.0
+                if "ставк" in query.lower():
+                    scenario = "rate_hike"
+                    magnitude = 2.0
+                if "сектор" in query.lower():
+                    scenario = "sector_decline"
+                    magnitude = 15.0
+                steps.append(
+                    PlanStepModel(
+                        step_number=step_counter,
+                        description="Провести стресс-тестирование портфеля.",
+                        target_server="analytics_executor",
+                        tool_name="run_stress_test",
+                        tool_args={
+                            "portfolio_id": portfolio_id,
+                            "scenario": scenario,
+                            "magnitude": magnitude,
+                        },
+                    )
                 )
-            )
-        else:
-            steps.append(
-                PlanStepModel(
-                    step_number=step_counter,
-                    description="Рассчитать риск-метрики портфеля.",
-                    target_server="analytics_executor",
-                    tool_name="calculate_risk_metrics",
-                    tool_args={"portfolio_id": portfolio_id, "confidence": 0.95},
+            else:
+                steps.append(
+                    PlanStepModel(
+                        step_number=step_counter,
+                        description="Рассчитать риск-метрики портфеля.",
+                        target_server="analytics_executor",
+                        tool_name="calculate_risk_metrics",
+                        tool_args={"portfolio_id": portfolio_id, "confidence": 0.95},
+                    )
                 )
-            )
-        step_counter += 1
+            step_counter += 1
 
     steps.append(
         PlanStepModel(

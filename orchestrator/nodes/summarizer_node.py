@@ -135,6 +135,49 @@ def _format_float(value: float | None, *, suffix: str = "", scale: float = 1.0) 
     return f"{normalized:,.2f}{suffix}".replace(",", " ")
 
 
+def _coerce_candle_rows(raw: Any) -> list[dict[str, Any]]:
+    """Извлекает список свечей из ответа MCP или сырого list[dict]."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict) and "close" in r]
+    if isinstance(raw, dict) and "text" in raw:
+        parsed = _decode_json_payload(raw["text"])
+        if isinstance(parsed, list):
+            return [r for r in parsed if isinstance(r, dict) and "close" in r]
+    return []
+
+
+def _format_candles_summary(rows: list[dict[str, Any]]) -> list[str]:
+    """Краткая сводка по OHLC-свечам для блока «Основные показатели»."""
+    if not rows:
+        return []
+    try:
+        rows = sorted(rows, key=lambda r: str(r.get("begin", "")))
+    except Exception:
+        pass
+    n = len(rows)
+    first, last = rows[0], rows[-1]
+    d0 = str(first.get("begin", ""))[:10]
+    d1 = str(last.get("begin", ""))[:10]
+    o0 = _as_float(first.get("close"))
+    c1 = _as_float(last.get("close"))
+    pct_txt = "н/д"
+    if o0 is not None and c1 is not None and abs(o0) > 1e-12:
+        pct_txt = f"{(c1 - o0) / o0 * 100.0:+.2f}%"
+    lows = [x for x in (_as_float(r.get("low")) for r in rows) if x is not None]
+    highs = [x for x in (_as_float(r.get("high")) for r in rows) if x is not None]
+    lo_m = min(lows) if lows else None
+    hi_m = max(highs) if highs else None
+    band = "н/д"
+    if lo_m is not None and hi_m is not None:
+        band = f"{_format_float(lo_m, suffix=' RUB')} — {_format_float(hi_m, suffix=' RUB')}"
+    return [
+        f"- История цен (дневные свечи, {n} точек): период {d0} — {d1}; "
+        f"изменение close за период ≈ {pct_txt}; диапазон high–low {band}."
+    ]
+
+
 def _extract_market_lines(market_data: dict[str, Any]) -> list[str]:
     """Возвращает ключевые рыночные факты для пользователя."""
     lines: list[str] = []
@@ -163,6 +206,10 @@ def _extract_market_lines(market_data: dict[str, Any]) -> list[str]:
         ytm = _format_float(_as_float(bond_data.get("YIELDATPREVWAPRICE")), suffix="%")
         duration = _format_float(_as_float(bond_data.get("DURATION")))
         lines.append(f"- Параметры облигации {ticker}: доходность {ytm}, дюрация {duration}.")
+
+    candle_rows = _coerce_candle_rows(market_data.get("get_candles"))
+    if candle_rows:
+        lines.extend(_format_candles_summary(candle_rows))
     return lines
 
 
@@ -477,12 +524,49 @@ def _news_trust_hint(news_data: list[dict[str, Any]]) -> str | None:
     return "Распределение доверия источников в выборке: " + ", ".join(parts) + "."
 
 
+def _describe_available_and_missing_blocks(
+    *,
+    has_quote: bool,
+    has_candles: bool,
+    has_news: bool,
+    has_risk: bool,
+) -> str:
+    """Текст о том, какие блоки данных есть в ответе и каких нет (без шаблона «все три»)."""
+    have: list[str] = []
+    if has_quote:
+        have.append("текущая котировка")
+    if has_candles:
+        have.append("история цен (свечи)")
+    if has_news:
+        have.append("новости")
+    if has_risk:
+        have.append("метрики риска / стресс по портфелю")
+
+    missing: list[str] = []
+    if not has_quote and not has_candles:
+        missing.append("рыночные данные")
+    if not has_news:
+        missing.append("новости")
+    if not has_risk:
+        missing.append("аналитика риска портфеля")
+
+    parts: list[str] = []
+    if have:
+        parts.append("В этом ответе есть: " + ", ".join(have) + ".")
+    if missing:
+        parts.append("Не запрашивалось или недоступно: " + ", ".join(missing) + ".")
+    return " ".join(parts).strip()
+
+
 def _build_interpretation(
     *,
     query_type: str,
     has_market: bool,
     has_news: bool,
     has_risk: bool,
+    has_quote: bool,
+    has_candles: bool,
+    investment_decision_intent: bool,
     portfolio_metrics: dict[str, Any],
     news_data: list[dict[str, Any]],
 ) -> str:
@@ -498,6 +582,20 @@ def _build_interpretation(
 
     if isinstance(risk, dict) and query_type == "risk_assessment":
         return _interpret_risk_metrics_block(risk)
+
+    if investment_decision_intent:
+        coverage = _describe_available_and_missing_blocks(
+            has_quote=has_quote,
+            has_candles=has_candles,
+            has_news=has_news,
+            has_risk=has_risk,
+        )
+        return (
+            "Прямой ответ «покупать / не покупать» или целевая цена не формируются — это было бы инвестиционной рекомендацией. "
+            f"{coverage} "
+            "Используйте цифры из блока «Основные показатели» как факты; решение сопоставьте с горизонтом, допустимой просадкой "
+            "и, при работе с портфелем в целом, с лимитами риска."
+        )
 
     if query_type == "market_monitor" and has_market:
         return (
@@ -522,10 +620,12 @@ def _build_interpretation(
             "Запрос обработан как комплексный: сочетаются рыночные факты, новости и блок риска. "
             "Такой срез лучше отражает взаимосвязь цены, информационного фона и ограничений по риску."
         )
-    if has_market or has_news or has_risk:
-        return (
-            "Данные частично закрывают запрос: интерпретацию стоит уточнять при появлении недостающих блоков "
-            "(котировки, новости или риск-метрики)."
+    if has_market or has_news or has_risk or has_candles:
+        return _describe_available_and_missing_blocks(
+            has_quote=has_quote,
+            has_candles=has_candles,
+            has_news=has_news,
+            has_risk=has_risk,
         )
     return "Собранные данные частично покрывают запрос; вывод ограничен доступным набором инструментов и источников."
 
@@ -539,6 +639,7 @@ def _build_conclusion(
     has_market: bool,
     has_news: bool,
     has_risk_lines: bool,
+    investment_decision_intent: bool,
 ) -> list[str]:
     """Практические шаги: приоритет — специфика стресс-теста и риск-метрик, иначе — тип запроса."""
     lines: list[str] = []
@@ -579,6 +680,18 @@ def _build_conclusion(
         lines.append(
             "- Пересчитайте метрики после значимых сделок или изменения состава — однодневные оценки чувствительны к выбросам в истории."
         )
+    elif investment_decision_intent:
+        lines.append(
+            "- Не используйте ответ как указание к сделке: сопоставьте цену и новости с горизонтом, допустимой просадкой и правилами диверсификации."
+        )
+        if not has_risk_lines:
+            lines.append(
+                "- Портфельные метрики риска здесь не считались; при необходимости запросите оценку риска или стресс по вашему портфелю отдельно."
+            )
+        else:
+            lines.append(
+                "- Сверьте приведённые метрики риска с внутренними лимитами перед изменением позиции."
+            )
     elif query_type == "market_monitor" and has_market:
         lines.append("- Зафиксируйте уровень входа/стопа относительно текущей котировки и времени последнего обновления.")
     elif query_type == "news_analysis" and has_news:
@@ -589,7 +702,7 @@ def _build_conclusion(
         lines.append("- Сверьте риск-метрики с внутренними лимитами и стресс-сценариями, зафиксированными в вашей политике.")
     elif query_type == "complex" and (has_market or has_news or has_risk_lines):
         lines.append(
-            "- Сведите воедино цену, новости и риск: меняйте веса только если все три сигнала согласованы с вашим горизонтом."
+            "- Сведите воедино цену, новости и (если есть) риск: решения по весам согласуйте с горизонтом и лимитами."
         )
     else:
         lines.append(
@@ -621,11 +734,18 @@ def _format_summary(state: dict[str, Any]) -> str:
     has_market = bool(market_lines)
     has_news = bool(news_lines)
     has_risk = bool(risk_lines)
+    quote_payload = _find_payload_dict(market_data.get("get_stock_quote"))
+    has_quote = isinstance(quote_payload, dict)
+    has_candles_data = bool(_coerce_candle_rows(market_data.get("get_candles")))
+    investment_decision_intent = bool(state.get("investment_decision_intent"))
     interpretation = _build_interpretation(
         query_type=query_type,
         has_market=has_market,
         has_news=has_news,
         has_risk=has_risk,
+        has_quote=has_quote,
+        has_candles=has_candles_data,
+        investment_decision_intent=investment_decision_intent,
         portfolio_metrics=portfolio_metrics,
         news_data=news_data,
     )
@@ -637,6 +757,7 @@ def _format_summary(state: dict[str, Any]) -> str:
         has_market=has_market,
         has_news=has_news,
         has_risk_lines=has_risk,
+        investment_decision_intent=investment_decision_intent,
     )
 
     lines = ["## Итоговый анализ", "", "### Что запросил пользователь", f"- {user_query}", "", "### Основные показатели"]

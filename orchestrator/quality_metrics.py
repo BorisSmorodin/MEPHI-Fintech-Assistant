@@ -25,6 +25,9 @@ def _normalize_expected_servers(expected_servers: set[str] | None, state: dict[s
         return {"news"}
     if query_type == "risk_assessment":
         return {"analytics"}
+    if query_type == "complex" and bool(state.get("investment_decision_intent")):
+        # Запрос «стоит ли купить X»: достаточно рынка и новостей, analytics не обязателен без портфеля.
+        return {"market", "news"}
     return {"market", "news", "analytics"}
 
 

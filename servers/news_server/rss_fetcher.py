@@ -82,20 +82,60 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _expanded_query_terms(query: str) -> list[str]:
-    """Расширяет термы запроса с учетом известных алиасов тикеров/компаний."""
-    query_terms = [token for token in query.lower().strip().split() if token]
-    expanded = list(query_terms)
-    for token in query_terms:
-        aliases = TICKER_ALIASES.get(token.upper())
-        if aliases:
-            expanded.extend(aliases)
-    # Сохраняем порядок и убираем дубликаты.
-    unique: list[str] = []
-    for token in expanded:
-        if token not in unique:
-            unique.append(token)
-    return unique
+def _alias_list_for_ticker(ticker_key: str) -> list[str]:
+    """Возвращает набор строк для OR-сопоставления по тикеру (алиасы + тикер в lower)."""
+    aliases = TICKER_ALIASES.get(ticker_key, [])
+    out: list[str] = []
+    for item in aliases:
+        if item not in out:
+            out.append(item)
+    low = ticker_key.lower()
+    if low not in out:
+        out.append(low)
+    return out
+
+
+def _ticker_match_group(token: str) -> list[str] | None:
+    """Если токен относится к известному тикеру, возвращает OR-группу; иначе None."""
+    upper = token.upper()
+    if upper in TICKER_ALIASES:
+        return _alias_list_for_ticker(upper)
+    lowered = token.lower()
+    for ticker_key, aliases in TICKER_ALIASES.items():
+        if lowered in aliases:
+            return _alias_list_for_ticker(ticker_key)
+    return None
+
+
+def _build_match_groups(query: str) -> list[list[str]]:
+    """Строит список групп: между группами логика AND, внутри группы — OR (тикер или литерал)."""
+    tokens = [token for token in query.lower().strip().split() if token]
+    groups: list[list[str]] = []
+    for token in tokens:
+        ticker_group = _ticker_match_group(token)
+        if ticker_group is not None:
+            groups.append(ticker_group)
+        else:
+            groups.append([token])
+    return groups
+
+
+def _flat_or_terms(groups: list[list[str]]) -> list[str]:
+    """Плоский список терминов для мягкого OR-fallback (порядок, без дубликатов)."""
+    flat: list[str] = []
+    for group in groups:
+        for term in group:
+            if term not in flat:
+                flat.append(term)
+    return flat
+
+
+def _matches_match_groups(composite_lower: str, groups: list[list[str]]) -> bool:
+    """Проверяет AND по группам: в каждой группе должен совпасть хотя бы один термин."""
+    for group in groups:
+        if not any(term in composite_lower for term in group):
+            return False
+    return True
 
 
 @dataclass(slots=True)
@@ -190,7 +230,8 @@ class NewsFetcher:
         if unknown_sources:
             raise NewsFetchError(f"Неизвестные источники: {unknown_sources}")
 
-        query_terms = _expanded_query_terms(query)
+        match_groups = _build_match_groups(query)
+        or_terms = _flat_or_terms(match_groups)
         rows: list[dict] = []
         source_errors = 0
         unavailable_sources: list[str] = []
@@ -207,30 +248,23 @@ class NewsFetcher:
         strict_match_count = 0
         for row in rows:
             composite_text = f"{row['title']} {row['summary']}".lower()
-            if query_terms and not all(token in composite_text for token in query_terms):
+            if match_groups and not _matches_match_groups(composite_text, match_groups):
                 continue
             strict_match_count += 1
             dedup_key = (row["title"].lower(), row["source"])
             if dedup_key not in deduplicated:
                 deduplicated[dedup_key] = row
 
-        # Если strict all-terms ничего не дал, пробуем мягкий OR-поиск.
+        # Если строгий AND/OR по группам ничего не дал — мягкий OR по всем терминам групп.
         fallback_mode = "none"
-        if query_terms and not deduplicated:
+        if match_groups and not deduplicated:
             fallback_mode = "or_query_terms"
             for row in rows:
                 composite_text = f"{row['title']} {row['summary']}".lower()
-                if any(token in composite_text for token in query_terms):
+                if any(token in composite_text for token in or_terms):
                     dedup_key = (row["title"].lower(), row["source"])
                     if dedup_key not in deduplicated:
                         deduplicated[dedup_key] = row
-
-        if query_terms and not deduplicated and rows:
-            fallback_mode = "recent_topn"
-            for row in rows:
-                dedup_key = (row["title"].lower(), row["source"])
-                if dedup_key not in deduplicated:
-                    deduplicated[dedup_key] = row
 
         sorted_rows = sorted(
             deduplicated.values(),

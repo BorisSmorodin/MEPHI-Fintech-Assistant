@@ -36,6 +36,7 @@ class InvestmentAssistantState(TypedDict):
     next_node: ExecutorTarget | None
     extracted_tickers: list[str]
     warnings: list[str]
+    investment_decision_intent: bool
 
 
 def initial_state(user_query: str = "") -> InvestmentAssistantState:
@@ -54,5 +55,6 @@ def initial_state(user_query: str = "") -> InvestmentAssistantState:
         "next_node": None,
         "extracted_tickers": [],
         "warnings": [],
+        "investment_decision_intent": False,
     }
 

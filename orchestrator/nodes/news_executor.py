@@ -82,6 +82,7 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
                 "messages": [AIMessage(content=f"News degraded mode: {error}")],
             }
         return {
+            "warnings": warnings,
             "error_count": new_error_count,
             "current_step": current_step + 1,
             "messages": [AIMessage(content=f"Ошибка news_executor: {error}")],
@@ -100,6 +101,7 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
                 "messages": [AIMessage(content=f"News degraded mode: {error}")],
             }
         return {
+            "warnings": warnings,
             "error_count": new_error_count,
             "current_step": current_step + 1,
             "messages": [AIMessage(content=f"Ошибка news_executor: {error}")],

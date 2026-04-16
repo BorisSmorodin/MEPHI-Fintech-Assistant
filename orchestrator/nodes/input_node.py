@@ -17,6 +17,29 @@ MARKET_KEYWORDS = {"котиров", "объём", "объем", "торг", "к
 NEWS_KEYWORDS = {"новост", "событ", "объявл", "ставк", "цб", "влияни"}
 RISK_KEYWORDS = {"риск", "портфел", "var", "просад", "диверсификац", "стресс"}
 STRESS_KEYWORDS = {"стресс", "stress", "сценар", "шок", "паден"}
+_INVESTMENT_DECISION_PATTERNS = (
+    re.compile(r"стоит\s+ли\s+(купить|продавать|покупать|продать)", re.IGNORECASE),
+    re.compile(r"(купить|продать|покупать|продавать)\s+ли\b", re.IGNORECASE),
+    re.compile(r"имеет\s+ли\s+смысл\s+(купить|продавать|покупать|продать)", re.IGNORECASE),
+    re.compile(r"should\s+i\s+(buy|sell)", re.IGNORECASE),
+    re.compile(r"\b(buy|sell)\s+or\s+(hold|not)\b", re.IGNORECASE),
+)
+
+_EXPLICIT_MARKET_HISTORY_HINTS = (
+    "свеч",
+    "график",
+    "динамик",
+    "истори",
+    "тренд",
+    "ohlc",
+    "за недел",
+    "за месяц",
+    "за год",
+    "за квартал",
+    "просадк",
+    "волатильност",
+)
+
 COMPANY_TICKER_HINTS: dict[str, str] = {
     "сбер": "SBER",
     "сбербанк": "SBER",
@@ -27,6 +50,22 @@ COMPANY_TICKER_HINTS: dict[str, str] = {
     "яндекс": "YDEX",
 }
 log = structlog.get_logger()
+
+
+def is_investment_decision_intent(query: str) -> bool:
+    """Определяет запрос о целесообразности покупки/продажи (без рекомендации в ответе)."""
+    if any(pattern.search(query) for pattern in _INVESTMENT_DECISION_PATTERNS):
+        return True
+    lowered = query.lower()
+    if "лучше купить" in lowered or "лучше продать" in lowered:
+        return True
+    return False
+
+
+def is_explicit_market_history_intent(query: str) -> bool:
+    """Явный запрос истории цен/свечей (тогда get_candles уместен)."""
+    lowered = query.lower()
+    return any(hint in lowered for hint in _EXPLICIT_MARKET_HISTORY_HINTS)
 
 
 def _classify_query_type(query: str) -> QueryType:
@@ -70,16 +109,19 @@ async def input_node(state: dict[str, Any]) -> dict[str, Any]:
             extracted_tickers.add(ticker)
     normalized_tickers = sorted(extracted_tickers)
     query_type = _classify_query_type(user_query)
+    investment_decision = is_investment_decision_intent(user_query)
     log.info(
         "input_node_classified",
         query_type=query_type,
         extracted_tickers=normalized_tickers,
         query_length=len(user_query),
+        investment_decision_intent=investment_decision,
     )
     return {
         "user_query": user_query,
         "query_type": query_type,
         "extracted_tickers": normalized_tickers,
+        "investment_decision_intent": investment_decision,
         "messages": [HumanMessage(content=user_query)],
     }
 
