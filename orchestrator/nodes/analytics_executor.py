@@ -9,6 +9,7 @@ import structlog
 
 from config.settings import get_settings
 from orchestrator.mcp_client import MCPClientError, get_mcp_client
+from orchestrator.nodes.planner_node import coerce_stress_magnitude_percent_points
 
 log = structlog.get_logger()
 ALLOWED_ANALYTICS_TOOLS = {
@@ -75,6 +76,7 @@ def _normalize_analytics_tool_args(
             magnitude = float(magnitude_raw)
         except (TypeError, ValueError):
             magnitude = 20.0 if scenario == "index_drop" else 2.0
+        magnitude = coerce_stress_magnitude_percent_points(scenario, magnitude)
 
         payload: dict[str, Any] = {
             "portfolio_id": portfolio_id,

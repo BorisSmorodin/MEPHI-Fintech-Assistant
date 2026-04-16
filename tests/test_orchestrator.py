@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from orchestrator.graph import run_query
@@ -454,4 +456,116 @@ async def test_summarizer_parses_mcp_text_wrapped_news_payload() -> None:
     final_answer = result["final_answer"] or ""
     assert "SBER reports growth" in final_answer
     assert "Недостаточно данных для содержательного ответа" not in final_answer
+
+
+@pytest.mark.asyncio
+async def test_planner_coerces_fraction_stress_magnitude(monkeypatch) -> None:
+    """LLM часто передаёт 0.2 вместо 20 п.п.; планировщик приводит к контракту stress_tester."""
+    llm_schema = PlanSchema(
+        steps=[
+            PlanStepModel(
+                step_number=1,
+                description="stress",
+                target_server="analytics_executor",
+                tool_name="run_stress_test",
+                tool_args={"portfolio_id": "demo_portfolio", "scenario": "index_drop", "magnitude": 0.2},
+            ),
+            PlanStepModel(
+                step_number=2,
+                description="done",
+                target_server="summarizer",
+                tool_name="summarize",
+                tool_args={},
+            ),
+        ],
+        reasoning="test",
+    )
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: llm_schema)
+    state = initial_state("Стресс IMOEX -20% demo_portfolio")
+    state["query_type"] = "risk_assessment"
+    result = await planner_node(state)
+    mag = result["plan"][0]["tool_args"]["magnitude"]
+    assert mag == 20.0
+
+
+@pytest.mark.asyncio
+async def test_summarizer_interpretation_risk_metrics_is_narrative_not_table_repeat() -> None:
+    """Интерпретация по риск-метрикам объясняет связи, а не дублирует таблицу «Ключевые данные»."""
+    state = initial_state("Оцени риск портфеля demo_portfolio")
+    state["query_type"] = "risk_assessment"
+    state["portfolio_metrics"] = {
+        "calculate_risk_metrics": {
+            "confidence": 0.95,
+            "var_historical": {"value_pct": 0.0128, "interpretation": "hist"},
+            "var_parametric": {"value_pct": 0.012, "interpretation": "param"},
+            "cvar": {"value_pct": 0.0153, "interpretation": "cvar"},
+            "volatility": {"value_annual": 0.1223, "interpretation": "Умеренная волатильность портфеля."},
+            "sharpe": {"value": -0.25, "interpretation": "Доходность на единицу риска отрицательная."},
+            "max_drawdown": {"value": 0.0951, "interpretation": "Максимальная наблюдаемая просадка кумулятивной доходности."},
+            "hhi": {
+                "positions": {"value": 0.2, "interpretation": "Умеренная концентрация."},
+                "sectors": {"value": 0.18, "interpretation": "Умеренная концентрация."},
+            },
+        }
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "Потери и хвост распределения" in text
+    assert "параметрическ" in text.lower()
+    assert "Волатильность и доходность на единицу риска." in text
+    assert "Концентрация (HHI)." in text
+    assert "Исторический однодневный VaR" not in text
+
+
+@pytest.mark.asyncio
+async def test_summarizer_interpretation_uses_stress_payload() -> None:
+    """Интерпретация опирается на поля run_stress_test, а не на шаблон risk_assessment."""
+    state = initial_state("Проведи стресс-тест портфеля demo_portfolio при падении IMOEX на 20%")
+    state["query_type"] = "risk_assessment"
+    state["portfolio_metrics"] = {
+        "run_stress_test": {
+            "scenario": "index_drop",
+            "magnitude": 20.0,
+            "total_loss_rub": 50000.0,
+            "total_loss_pct": 0.05,
+            "current_var_comparison": "Стресс-потеря выше текущего однодневного VaR(95%).",
+            "portfolio_value_rub": 1_000_000.0,
+            "affected_positions_count": 3,
+        }
+    }
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "Сценарий" in text
+    assert "beta" in text.lower() or "упрощ" in text.lower()
+    assert "### Практический вывод" in text
+
+
+@pytest.mark.asyncio
+async def test_analytics_executor_coerces_stress_magnitude(monkeypatch) -> None:
+    """analytics_executor дублирует нормализацию magnitude перед MCP."""
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def call_tool(self, tool_name: str, tool_args: dict[str, Any]):
+            self.calls.append((tool_name, dict(tool_args)))
+            return {"scenario": "index_drop", "magnitude": tool_args["magnitude"]}
+
+    client = RecordingClient()
+    monkeypatch.setattr("orchestrator.nodes.analytics_executor.get_mcp_client", lambda: client)
+    state = initial_state("stress")
+    state["plan"] = [
+        {
+            "step_number": 1,
+            "description": "stress",
+            "target_server": "analytics_executor",
+            "tool_name": "run_stress_test",
+            "tool_args": {"portfolio_id": "demo_portfolio", "scenario": "index_drop", "magnitude": 0.2},
+        }
+    ]
+    await analytics_executor(state)
+    assert client.calls
+    _tool, args = client.calls[0]
+    assert args["magnitude"] == 20.0
 

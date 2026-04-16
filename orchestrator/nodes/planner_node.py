@@ -54,6 +54,19 @@ ALLOWED_TOOLS_BY_TARGET = {
 }
 
 
+def coerce_stress_magnitude_percent_points(scenario: str, magnitude: float) -> float:
+    """Приводит magnitude к процентным пунктам, как в stress_tester (20 => падение на 20%).
+
+    Модели часто передают долю (0.2) вместо процентных пунктов (20).
+    """
+    normalized = scenario.strip().lower()
+    if normalized not in {"index_drop", "sector_decline", "rate_hike"}:
+        return magnitude
+    if 0 < magnitude < 1:
+        return magnitude * 100.0
+    return magnitude
+
+
 def _detect_portfolio_id(query: str) -> str:
     """Извлекает portfolio_id из текста запроса."""
     match = PORTFOLIO_RE.search(query)
@@ -118,6 +131,7 @@ def _normalize_analytics_tool_args(
             magnitude = float(magnitude_raw)
         except (TypeError, ValueError):
             magnitude = 20.0 if scenario == "index_drop" else 2.0
+        magnitude = coerce_stress_magnitude_percent_points(scenario, magnitude)
 
         payload: dict[str, Any] = {
             "portfolio_id": portfolio_id,

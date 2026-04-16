@@ -7,12 +7,12 @@
 1. Проверить наличие `.env` и обязательных ключей.
 2. Убедиться, что зависимости установлены (`uv sync --group dev`).
 3. Поднять MCP-серверы в отдельных терминалах:
-   - `python -m servers.market_server.server`
-   - `python -m servers.news_server.server`
-   - `python -m servers.analytics_server.server`
+  - `python -m servers.market_server.server`
+  - `python -m servers.news_server.server`
+  - `python -m servers.analytics_server.server`
 4. Поднять один из UI:
-   - CLI: `python -m ui.cli chat`
-   - или Streamlit: `streamlit run ui/streamlit_app.py`
+  - CLI: `python -m ui.cli chat`
+  - или Streamlit: `streamlit run ui/streamlit_app.py`
 
 ## 2) Демонстрационные сценарии (по ТЗ)
 
@@ -80,12 +80,12 @@
 
 ## 4) Чеклист показа для научного руководителя
 
-- [ ] Показаны требования и архитектура (`README`, docs).
-- [ ] Продемонстрирован запуск трех MCP-серверов.
-- [ ] Выполнены 5 E2E-сценариев из ТЗ.
-- [ ] Продемонстрирован минимум один degrade/fallback кейс.
-- [ ] Показаны результаты тестов (`pytest -q`).
-- [ ] Показан отчет по метрикам качества.
+- Показаны требования и архитектура (`README`, docs).
+- Продемонстрирован запуск трех MCP-серверов.
+- Выполнены 5 E2E-сценариев из ТЗ.
+- Продемонстрирован минимум один degrade/fallback кейс.
+- Показаны результаты тестов (`pytest -q`).
+- Показан отчет по метрикам качества.
 
 ## 5) Quick Troubleshooting
 
@@ -110,3 +110,4 @@
 - Проверить доступность сети.
 - Перезапустить соответствующий MCP-сервер.
 - Для демонстрации использовать mock-режим и тестовые сценарии.
+
