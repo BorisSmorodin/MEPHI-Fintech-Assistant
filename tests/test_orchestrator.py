@@ -490,7 +490,7 @@ async def test_planner_coerces_fraction_stress_magnitude(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_summarizer_interpretation_risk_metrics_is_narrative_not_table_repeat() -> None:
-    """Интерпретация по риск-метрикам объясняет связи, а не дублирует таблицу «Ключевые данные»."""
+    """Интерпретация по риск-метрикам объясняет связи, а не дублирует таблицу «Основные показатели»."""
     state = initial_state("Оцени риск портфеля demo_portfolio")
     state["query_type"] = "risk_assessment"
     state["portfolio_metrics"] = {
@@ -538,6 +538,19 @@ async def test_summarizer_interpretation_uses_stress_payload() -> None:
     assert "Сценарий" in text
     assert "beta" in text.lower() or "упрощ" in text.lower()
     assert "### Практический вывод" in text
+    assert "### Основные показатели" in text
+    assert "### Ограничения данных" not in text
+
+
+@pytest.mark.asyncio
+async def test_summarizer_omits_limitations_section_without_warnings() -> None:
+    """Без предупреждений секция «Ограничения данных» не выводится (не засоряет ответ)."""
+    state = initial_state("Покажи котировку SBER")
+    state["query_type"] = "market_monitor"
+    state["market_data"] = {"get_stock_quote": {"SECID": "SBER", "LAST": 300.0, "CHANGE": 1.0, "UPDATETIME": "12:00:00"}}
+    result = await summarizer_node(state)
+    text = result["final_answer"] or ""
+    assert "### Ограничения данных" not in text
 
 
 @pytest.mark.asyncio

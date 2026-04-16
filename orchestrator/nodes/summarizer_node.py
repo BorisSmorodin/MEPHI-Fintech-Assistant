@@ -264,10 +264,11 @@ def _extract_risk_lines(portfolio_metrics: dict[str, Any]) -> list[str]:
         nav = _format_float(_as_float(stress_payload.get("portfolio_value_rub")), suffix=" RUB")
         aff = stress_payload.get("affected_positions_count")
         aff_part = f", затронуто позиций: {aff}" if aff is not None else ""
-        var_comparison = str(stress_payload.get("current_var_comparison", "н/д"))
+        var_comparison = str(stress_payload.get("current_var_comparison", "н/д")).strip().rstrip(".")
+        var_comparison_fmt = f"{var_comparison}." if var_comparison else "н/д"
         lines.append(
             f"- Стресс-тест ({scenario}, {mag_label}; NAV ≈ {nav}{aff_part}): оценочные потери "
-            f"{total_loss_rub} ({total_loss_pct} от NAV). Сравнение с VaR: {var_comparison}."
+            f"{total_loss_rub} ({total_loss_pct} от NAV). Сравнение с VaR: {var_comparison_fmt}"
         )
 
     fallback_summary = _find_payload_dict(portfolio_metrics.get("fallback_portfolio_summary"))
@@ -282,22 +283,10 @@ def _extract_risk_lines(portfolio_metrics: dict[str, Any]) -> list[str]:
 
 
 def _interpret_stress_block(stress: dict[str, Any]) -> str:
-    """Интерпретация по результатам run_stress_test (упрощённая модель, не оферта)."""
+    """Интерпретация по run_stress_test: смысл сценария и выводы; цифры — в блоке «Основные показатели»."""
     scenario = str(stress.get("scenario", "")).strip().lower()
-    mag = _as_float(stress.get("magnitude"))
-    tlp = _as_float(stress.get("total_loss_pct"))
-    nav = _as_float(stress.get("portfolio_value_rub"))
     comparison = str(stress.get("current_var_comparison", "")).strip()
-    n_aff_raw = stress.get("affected_positions_count")
-    n_aff: int | None
-    try:
-        n_aff = int(float(n_aff_raw)) if n_aff_raw is not None else None
-    except (TypeError, ValueError):
-        n_aff = None
-
-    mag_txt = _format_float(mag, suffix=" п.п.") if mag is not None else "н/д"
-    loss_txt = _format_float(tlp, suffix="% от NAV", scale=100.0) if tlp is not None else "н/д"
-    nav_txt = _format_float(nav, suffix=" RUB") if nav is not None else "н/д"
+    comparison_lower = comparison.lower()
 
     scenario_ru = {
         "index_drop": "падение рыночного прокси (индекса)",
@@ -306,30 +295,27 @@ def _interpret_stress_block(stress: dict[str, Any]) -> str:
     }.get(scenario, scenario or "сценарий")
 
     parts: list[str] = [
-        f"Сценарий «{scenario_ru}» задан интенсивностью около {mag_txt}. "
-        f"По упрощённой beta-модели оценочная просадка портфеля порядка {loss_txt} "
-        f"при оценочной стоимости портфеля {nav_txt}."
+        f"Сценарий «{scenario_ru}» в упрощённой постановке: шок переносится на позиции через оценённые беты и доли в портфеле, "
+        "без учёта комиссий, проскальзывания и сдвигов корреляций в стресс-режиме. "
+        "Все численные итоги (масштаб шока, NAV, потери в рублях и доле от NAV, число позиций, формулировка сравнения с VaR) "
+        "собраны в блоке «Основные показатели» — здесь только расшифровка смысла."
     ]
-    if n_aff is not None and n_aff >= 0:
-        parts.append(f" В расчёте участвует позиций: {n_aff}.")
-    if comparison:
-        parts.append(f" {comparison}")
-        if "выше" in comparison.lower():
-            parts.append(
-                " На практике это сигнал, что заданный шок «тяжелее» типичного плохого дня по VaR(95%): "
-                "стоит проверить лимиты и буфер ликвидности."
-            )
-        elif "ниже" in comparison.lower():
-            parts.append(
-                " Даже при заданном шоке оценочный ущерб остаётся скромнее текущего однодневного VaR(95%): "
-                "риск по модели выглядит умеренным, но это всё ещё упрощение (без нелинейностей и ликвидности)."
-            )
-        else:
-            parts.append(
-                " Масштаб ущерба близок к текущему однодневному VaR(95%) — имеет смысл смотреть на концентрацию и чувствительность к рынку."
-            )
+    if "выше" in comparison_lower:
+        parts.append(
+            " По отношению к текущему однодневному VaR(95%) такой стресс для данного портфеля выглядит тяжелее «типичного плохого дня»: "
+            "имеет смысл сверить результат с лимитами капитала и ликвидности."
+        )
+    elif "ниже" in comparison_lower:
+        parts.append(
+            " Относительно текущего однодневного VaR(95%) оценочный ущерб при заданном шоке выглядит скромнее — "
+            "это не отменяет осторожности по концентрации и по допущениям модели."
+        )
+    elif comparison:
+        parts.append(
+            " Масштаб стресс-потери по модели близок к порядку однодневного VaR(95%) — полезно дополнительно смотреть на отраслевую и инструментальную концентрацию."
+        )
     parts.append(
-        " Модель не учитывает комиссии, проскальзывание и корреляционные сдвиги в стрессе — используйте вывод как ориентир."
+        " Используйте результат как ориентир по порядку величины, а не как точный прогноз PnL."
     )
     return "".join(parts).strip()
 
@@ -348,7 +334,7 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
     conf = _as_float(risk.get("confidence")) if risk.get("confidence") is not None else None
     conf_label = f"{conf:.0%}" if conf is not None and 0 < conf < 1 else "95%"
 
-    # --- VaR / CVaR: смысл и взаимосвязи (цифры уже в «Ключевых данных»).
+    # --- VaR / CVaR: смысл и взаимосвязи (цифры уже в «Основных показателях»).
     if vh is not None or vp is not None or vc is not None:
         var_lines: list[str] = [
             f"Потери и хвост распределения (VaR / CVaR, доверие {conf_label}). "
@@ -442,7 +428,7 @@ def _interpret_risk_metrics_block(risk: dict[str, Any]) -> str:
                 "Просадка (Max Drawdown). "
                 "Это исторически максимальная глубина падения кривой капитала от предыдущего пика, а не один день. "
                 "Она обычно существенно больше однодневного VaR, потому что отражает накопление серии неблагоприятных периодов и совместные просадки позиций. "
-                "Сопоставляйте величину просадки из блока «Ключевые данные» с вашим горизонтом и лимитом по глубине просадки в политике риска."
+                "Сопоставляйте величину просадки из блока «Основные показатели» с вашим горизонтом и лимитом по глубине просадки в политике риска."
             )
 
     hhi = risk.get("hhi")
@@ -653,7 +639,7 @@ def _format_summary(state: dict[str, Any]) -> str:
         has_risk_lines=has_risk,
     )
 
-    lines = ["## Итоговый анализ", "", "### Что запросил пользователь", f"- {user_query}", "", "### Ключевые данные"]
+    lines = ["## Итоговый анализ", "", "### Что запросил пользователь", f"- {user_query}", "", "### Основные показатели"]
     if has_market:
         lines.extend(market_lines)
     if has_news:
@@ -663,12 +649,11 @@ def _format_summary(state: dict[str, Any]) -> str:
     if not (has_market or has_news or has_risk):
         lines.append("- Недостаточно данных для содержательного ответа по запросу.")
 
-    lines.extend(["", "### Интерпретация", interpretation, "", "### Ограничения данных"])
+    lines.extend(["", "### Интерпретация", interpretation])
     if warnings:
+        lines.extend(["", "### Ограничения данных"])
         for warning in warnings:
             lines.append(f"- {warning}")
-    else:
-        lines.append("- Существенных ограничений по доступности данных не зафиксировано.")
 
     lines.extend(["", "### Практический вывод"])
     lines.extend(conclusion_lines)
