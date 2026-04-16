@@ -15,6 +15,12 @@ PLANNER_SYSTEM_PROMPT = """
 - news: fetch_news, get_cb_key_rate, get_market_sentiment, get_macro_calendar
 - analytics: get_portfolio_summary, calculate_risk_metrics, run_stress_test, execute_analytics_query
 
+Контракты аргументов analytics-инструментов (обязательны):
+- get_portfolio_summary: {"portfolio_id": "<id>"}
+- calculate_risk_metrics: {"portfolio_id": "<id>", "confidence": 0.95}
+- run_stress_test: {"portfolio_id": "<id>", "scenario": "index_drop|rate_hike|sector_decline", "magnitude": <float>, "target_sector": "<str|null>"}
+- execute_analytics_query: {"query": "<SELECT ...>"}
+
 Правила:
 1) Не выдумывай инструменты и аргументы.
 2) Последний шаг обязан быть target_server=summarizer.

@@ -44,18 +44,25 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
     try:
         result = await client.call_tool(tool_name, tool_args)
         news_data = list(state.get("news_data", []))
+        warnings = list(state.get("warnings", []))
         if isinstance(result, list):
             news_data.extend(result)
+            if tool_name == "fetch_news" and not result:
+                warnings.append("По запросу не найдено новостей в доступных источниках.")
         else:
             news_data.append({"tool": tool_name, "payload": result})
-        return {
+        response: dict[str, Any] = {
             "news_data": news_data,
             "current_step": current_step + 1,
             "messages": [AIMessage(content=f"News step выполнен: {tool_name}")],
         }
+        if warnings:
+            response["warnings"] = warnings
+        return response
     except MCPClientError as error:
         new_error_count = int(state.get("error_count", 0)) + 1
         warnings = list(state.get("warnings", []))
+        warnings.append("Часть новостных источников недоступна, охват новостей ограничен.")
         if new_error_count >= settings.max_error_count:
             warnings.append("news_server временно недоступен, продолжаем без части новостей.")
             return {
@@ -72,6 +79,7 @@ async def news_executor(state: dict[str, Any]) -> dict[str, Any]:
     except Exception as error:
         new_error_count = int(state.get("error_count", 0)) + 1
         warnings = list(state.get("warnings", []))
+        warnings.append("Часть новостных источников недоступна, охват новостей ограничен.")
         if new_error_count >= settings.max_error_count:
             warnings.append("news_server временно недоступен, продолжаем без части новостей.")
             return {

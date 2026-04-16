@@ -154,6 +154,52 @@ def test_unavailable_source_fallback(monkeypatch) -> None:
     result = fetcher.fetch_news(query="LKOH", sources=["interfax", "cbr"], limit=10)
     assert len(result) == 1
     assert result[0]["source"] == "cbr"
+    diagnostics = fetcher.last_fetch_diagnostics
+    assert diagnostics["source_errors"] == 1
+    assert diagnostics["degraded"] is False
+
+
+def test_source_alias_and_recent_fallback(monkeypatch) -> None:
+    """Проверяет alias источника и fallback до recent top-N."""
+    fetcher = NewsFetcher(settings=_settings(), session=requests.Session())
+    monkeypatch.setattr(fetcher.session, "get", lambda *_args, **_kwargs: DummyResponse(content=b"<rss />"))
+    monkeypatch.setattr(
+        "servers.news_server.rss_fetcher.feedparser.parse",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            entries=[
+                SimpleNamespace(
+                    title="Обзор рынка акций",
+                    link="https://example.com/market",
+                    published="Tue, 14 Apr 2026 12:00:00 +0000",
+                    summary="Общая рыночная ситуация",
+                )
+            ]
+        ),
+    )
+    result = fetcher.fetch_news(query="GAZP", sources=["cbonds"], limit=5)
+    assert len(result) == 1
+    diagnostics = fetcher.last_fetch_diagnostics
+    assert diagnostics["fallback_mode"] == "recent_topn"
+
+
+@pytest.mark.asyncio
+async def test_fetch_news_tool_raises_when_sources_degraded_and_empty(monkeypatch) -> None:
+    """Проверяет диагностическую ToolError при пустом результате и деградации источников."""
+
+    class FailingFetcher:
+        last_fetch_diagnostics = {
+            "unavailable_sources": ["cbr", "interfax"],
+            "degraded": True,
+            "fallback_mode": "none",
+        }
+
+        def fetch_news(self, *_args, **_kwargs):
+            return []
+
+    monkeypatch.setattr("servers.news_server.server._get_fetcher", lambda: FailingFetcher())
+    with pytest.raises(ToolError) as error:
+        await fetch_news("GAZP", limit=10)
+    assert "недоступны" in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -162,6 +208,12 @@ async def test_news_server_tools_smoke(monkeypatch) -> None:
     now = datetime.now(timezone.utc)
 
     class FakeFetcher:
+        last_fetch_diagnostics = {
+            "unavailable_sources": [],
+            "degraded": False,
+            "fallback_mode": "none",
+        }
+
         def fetch_news(self, query: str, sources: list[str] | None = None, limit: int = 10):
             _ = query, sources, limit
             return [

@@ -71,13 +71,30 @@ async def fetch_news(query: str, sources: list[str] | None = None, limit: int = 
     log.info("mcp_tool_called", tool="fetch_news", query=query, sources=sources, limit=limit)
     if len(query.strip()) == 0:
         raise ToolError("Параметр query не может быть пустым.")
+    fetcher = _get_fetcher()
     try:
-        rows = _get_fetcher().fetch_news(query=query, sources=sources, limit=limit)
+        rows = fetcher.fetch_news(query=query, sources=sources, limit=limit)
     except NewsFetchError as error:
         raise ToolError(str(error)) from error
     except Exception as error:
         log.error("fetch_news_failed", error=str(error))
         raise ToolError(f"Ошибка получения новостей: {error}") from error
+
+    diagnostics = fetcher.last_fetch_diagnostics
+    unavailable_sources = diagnostics.get("unavailable_sources", [])
+    if diagnostics.get("degraded"):
+        log.warning(
+            "fetch_news_degraded_mode",
+            query=query,
+            unavailable_sources=unavailable_sources,
+            fallback_mode=diagnostics.get("fallback_mode"),
+        )
+
+    if not rows and unavailable_sources:
+        raise ToolError(
+            "Новостные источники частично/полностью недоступны: "
+            f"{', '.join(unavailable_sources)}. Попробуйте повторить запрос позже."
+        )
 
     payload: list[dict[str, Any]] = []
     for row in rows:

@@ -32,6 +32,22 @@ class PlanSchema(BaseModel):
 
 PORTFOLIO_RE = re.compile(r"\b[\w-]*portfolio[\w-]*\b", re.IGNORECASE)
 PERCENT_RE = re.compile(r"-?\d+(?:[.,]\d+)?\s*%")
+SCENARIO_ALIASES = {
+    "market_downturn": "index_drop",
+    "imoex_drop": "index_drop",
+    "rate_up": "rate_hike",
+}
+ALLOWED_TOOLS_BY_TARGET = {
+    "market_executor": {"get_stock_quote", "get_candles", "get_board_securities", "get_index_analytics", "get_bond_data"},
+    "news_executor": {"fetch_news", "get_cb_key_rate", "get_market_sentiment", "get_macro_calendar"},
+    "analytics_executor": {
+        "get_portfolio_summary",
+        "calculate_risk_metrics",
+        "run_stress_test",
+        "execute_analytics_query",
+    },
+    "summarizer": {"summarize"},
+}
 
 
 def _detect_portfolio_id(query: str) -> str:
@@ -50,6 +66,181 @@ def _is_stress_intent(query: str) -> bool:
     has_percent = bool(PERCENT_RE.search(lowered))
     has_index = any(keyword in lowered for keyword in {"imoex", "rtsi", "rgbi", "индекс"})
     return has_percent and has_index
+
+
+def _normalize_analytics_tool_args(
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    user_query: str,
+) -> dict[str, Any]:
+    """Нормализует аргументы analytics-инструментов к контракту MCP."""
+    normalized = dict(tool_args)
+
+    # Унифицируем ключ portfolio_id.
+    portfolio_id = (
+        normalized.get("portfolio_id")
+        or normalized.get("portfolio_name")
+        or normalized.get("name")
+        or _detect_portfolio_id(user_query)
+    )
+    portfolio_id = str(portfolio_id).strip() if portfolio_id else "demo_portfolio"
+    normalized["portfolio_id"] = portfolio_id
+    normalized.pop("portfolio_name", None)
+    normalized.pop("name", None)
+    normalized.pop("tickers", None)
+
+    if tool_name == "get_portfolio_summary":
+        return {"portfolio_id": portfolio_id}
+
+    if tool_name == "calculate_risk_metrics":
+        confidence = normalized.get("confidence", 0.95)
+        try:
+            confidence_value = float(confidence)
+        except (TypeError, ValueError):
+            confidence_value = 0.95
+        if confidence_value <= 0 or confidence_value >= 1:
+            confidence_value = 0.95
+        return {"portfolio_id": portfolio_id, "confidence": confidence_value}
+
+    if tool_name == "run_stress_test":
+        scenario = str(normalized.get("scenario", "index_drop")).strip().lower()
+        scenario = SCENARIO_ALIASES.get(scenario, scenario)
+        if scenario not in {"index_drop", "rate_hike", "sector_decline"}:
+            scenario = "index_drop"
+
+        magnitude_raw = normalized.get("magnitude", 20.0 if scenario == "index_drop" else 2.0)
+        try:
+            magnitude = float(magnitude_raw)
+        except (TypeError, ValueError):
+            magnitude = 20.0 if scenario == "index_drop" else 2.0
+
+        payload: dict[str, Any] = {
+            "portfolio_id": portfolio_id,
+            "scenario": scenario,
+            "magnitude": magnitude,
+        }
+        if scenario == "sector_decline":
+            target_sector = normalized.get("target_sector") or normalized.get("sector")
+            if isinstance(target_sector, str) and target_sector.strip():
+                payload["target_sector"] = target_sector.strip()
+        return payload
+
+    return normalized
+
+
+def _normalize_news_tool_args(
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    user_query: str,
+    extracted_tickers: list[str],
+) -> dict[str, Any]:
+    """Нормализует аргументы news-инструментов."""
+    normalized = dict(tool_args)
+    fallback_ticker = extracted_tickers[0] if extracted_tickers else "SBER"
+    if tool_name == "fetch_news":
+        query = normalized.get("query") or normalized.get("ticker") or fallback_ticker or user_query
+        limit = normalized.get("limit", 10)
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 10
+        if limit_value <= 0:
+            limit_value = 10
+        if limit_value > 100:
+            limit_value = 100
+        payload: dict[str, Any] = {"query": str(query).strip() or fallback_ticker, "limit": limit_value}
+        sources = normalized.get("sources")
+        if isinstance(sources, list):
+            payload["sources"] = [str(item).strip().lower() for item in sources if str(item).strip()]
+        return payload
+    if tool_name == "get_market_sentiment":
+        ticker = normalized.get("ticker") or normalized.get("query") or fallback_ticker
+        return {"ticker": str(ticker).strip().upper() or fallback_ticker}
+    if tool_name == "get_macro_calendar":
+        date_from = str(normalized.get("date_from") or "2026-01-01")
+        date_to = str(normalized.get("date_to") or "2026-12-31")
+        return {"date_from": date_from, "date_to": date_to}
+    return normalized
+
+
+def _normalize_market_tool_args(
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    extracted_tickers: list[str],
+) -> dict[str, Any]:
+    """Нормализует аргументы market-инструментов."""
+    normalized = dict(tool_args)
+    fallback_ticker = extracted_tickers[0] if extracted_tickers else "SBER"
+    if tool_name == "get_stock_quote":
+        ticker = normalized.get("ticker") or normalized.get("secid") or fallback_ticker
+        return {"ticker": str(ticker).strip().upper() or fallback_ticker}
+    return normalized
+
+
+def _sanitize_plan_steps(
+    *,
+    steps: list[dict[str, Any]],
+    user_query: str,
+    extracted_tickers: list[str],
+) -> list[dict[str, Any]]:
+    """Применяет post-validation для шагов плана после LLM/fallback."""
+    sanitized: list[dict[str, Any]] = []
+    for step in steps:
+        normalized_step = dict(step)
+        tool_name = str(normalized_step.get("tool_name", ""))
+        target = str(normalized_step.get("target_server", ""))
+        if target not in {"market_executor", "news_executor", "analytics_executor", "summarizer"}:
+            continue
+        allowed_tools = ALLOWED_TOOLS_BY_TARGET[target]
+        if tool_name not in allowed_tools:
+            if target == "summarizer":
+                tool_name = "summarize"
+            else:
+                continue
+        tool_args = dict(normalized_step.get("tool_args", {}))
+        if target == "market_executor":
+            tool_args = _normalize_market_tool_args(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                extracted_tickers=extracted_tickers,
+            )
+        elif target == "news_executor":
+            tool_args = _normalize_news_tool_args(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                user_query=user_query,
+                extracted_tickers=extracted_tickers,
+            )
+        elif target == "analytics_executor":
+            tool_args = _normalize_analytics_tool_args(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                user_query=user_query,
+            )
+        elif target == "summarizer":
+            tool_args = {}
+            tool_name = "summarize"
+
+        normalized_step["tool_name"] = tool_name
+        normalized_step["tool_args"] = tool_args
+        sanitized.append(normalized_step)
+
+    if not sanitized or sanitized[-1].get("target_server") != "summarizer":
+        sanitized.append(
+            {
+                "step_number": len(sanitized) + 1,
+                "description": "Суммаризировать результаты.",
+                "target_server": "summarizer",
+                "tool_name": "summarize",
+                "tool_args": {},
+            }
+        )
+    for index, step in enumerate(sanitized, start=1):
+        step["step_number"] = index
+    return sanitized
 
 
 def _build_fallback_plan(state: dict[str, Any]) -> PlanSchema:
@@ -226,6 +417,11 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
 
         schema = llm_plan or _build_fallback_plan(state)
         normalized_plan = [item.model_dump() for item in schema.steps]
+        normalized_plan = _sanitize_plan_steps(
+            steps=normalized_plan,
+            user_query=str(state.get("user_query", "")),
+            extracted_tickers=list(state.get("extracted_tickers", [])),
+        )
         if len(normalized_plan) > 10:
             normalized_plan = normalized_plan[:10]
         next_node = normalized_plan[0]["target_server"] if normalized_plan else "summarizer"

@@ -16,6 +16,15 @@ MARKET_KEYWORDS = {"котиров", "объём", "объем", "торг", "к
 NEWS_KEYWORDS = {"новост", "событ", "объявл", "ставк", "цб", "влияни"}
 RISK_KEYWORDS = {"риск", "портфел", "var", "просад", "диверсификац", "стресс"}
 STRESS_KEYWORDS = {"стресс", "stress", "сценар", "шок", "паден"}
+COMPANY_TICKER_HINTS: dict[str, str] = {
+    "сбер": "SBER",
+    "сбербанк": "SBER",
+    "газпром": "GAZP",
+    "лукойл": "LKOH",
+    "роснефть": "ROSN",
+    "норникель": "GMKN",
+    "яндекс": "YDEX",
+}
 
 
 def _classify_query_type(query: str) -> QueryType:
@@ -52,12 +61,17 @@ async def input_node(state: dict[str, Any]) -> dict[str, Any]:
     if len(user_query) > 2000:
         raise ValueError("Запрос пользователя не должен превышать 2000 символов.")
 
-    extracted_tickers = sorted(set(TICKER_PATTERN.findall(user_query.upper())))
+    extracted_tickers = set(TICKER_PATTERN.findall(user_query.upper()))
+    lowered_query = user_query.lower()
+    for hint, ticker in COMPANY_TICKER_HINTS.items():
+        if hint in lowered_query:
+            extracted_tickers.add(ticker)
+    normalized_tickers = sorted(extracted_tickers)
     query_type = _classify_query_type(user_query)
     return {
         "user_query": user_query,
         "query_type": query_type,
-        "extracted_tickers": extracted_tickers,
+        "extracted_tickers": normalized_tickers,
         "messages": [HumanMessage(content=user_query)],
     }
 

@@ -53,6 +53,7 @@ def patch_mcp_client(monkeypatch, fake_mcp_client):
         return None
 
     monkeypatch.setattr("orchestrator.nodes.market_executor.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("orchestrator.nodes.planner_node._try_llm_plan", lambda _state: None)
 
 
 @pytest.mark.asyncio
@@ -66,6 +67,8 @@ async def test_e2e_market_only() -> None:
     assert result["final_answer"]
     assert "get_stock_quote" in result["market_data"]
     assert result["quality_metrics"]["tool_selection_correct"] is True
+    assert "Котировка SBER" in result["final_answer"]
+    assert "Что запросил пользователь" in result["final_answer"]
 
 
 @pytest.mark.asyncio
@@ -79,6 +82,8 @@ async def test_e2e_news_only() -> None:
     assert result["final_answer"]
     assert len(result["news_data"]) >= 1
     assert result["quality_metrics"]["tool_selection_correct"] is True
+    assert "GAZP новость" in result["final_answer"]
+    assert "тональность" in result["final_answer"]
 
 
 @pytest.mark.asyncio
@@ -92,6 +97,9 @@ async def test_e2e_risk_only() -> None:
     assert result["final_answer"]
     assert "calculate_risk_metrics" in result["portfolio_metrics"]
     assert result["quality_metrics"]["tool_selection_correct"] is True
+    assert "Волатильность" in result["final_answer"]
+    assert "Практический вывод" in result["final_answer"]
+    assert not any("missing required argument" in warning.lower() for warning in result["warnings"])
 
 
 @pytest.mark.asyncio
@@ -107,6 +115,9 @@ async def test_e2e_stress_imoex_minus_20() -> None:
     assert stress["scenario"] == "index_drop"
     assert stress["total_loss_rub"] > 0
     assert result["quality_metrics"]["tool_selection_correct"] is True
+    assert "Стресс-тест" in result["final_answer"]
+    assert "потери" in result["final_answer"]
+    assert not any("missing required argument" in warning.lower() for warning in result["warnings"])
 
 
 @pytest.mark.asyncio
@@ -122,6 +133,8 @@ async def test_e2e_portfolio_with_oilgas_news() -> None:
     assert result["news_data"]
     assert result["portfolio_metrics"]
     assert result["quality_metrics"]["tool_selection_correct"] is True
+    assert "Котировка GAZP" in result["final_answer"]
+    assert "GAZP новость" in result["final_answer"]
 
 
 def test_cli_command_parsing_and_debug() -> None:
@@ -198,4 +211,5 @@ async def test_e2e_degradation_when_news_unavailable(monkeypatch) -> None:
     result = await run_query("Покажи котировку SBER, новости и оцени риск портфеля demo_portfolio")
     assert result["final_answer"]
     assert isinstance(result.get("error_count"), int)
+    assert "ограничен" in result["final_answer"]
 

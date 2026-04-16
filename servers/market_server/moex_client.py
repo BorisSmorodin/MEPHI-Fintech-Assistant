@@ -121,30 +121,73 @@ class MoexClient:
         if cached is not None:
             return cached
 
+        url = (
+            "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/"
+            f"{normalized_ticker}.json"
+        )
         try:
-            rows = apimoex.get_board_securities(
-                self.session,
-                board="TQBR",
-                market="shares",
-                columns=("SECID", "LAST", "CHANGE", "VOLTODAY", "BID", "OFFER", "UPDATETIME"),
-            )
+            raw_payload = self._request_json(url)
+        except requests.HTTPError as error:
+            raise TickerNotFoundError(f"Тикер {normalized_ticker} не найден на TQBR") from error
         except Exception as error:
             raise MarketDataError(f"Ошибка запроса котировок MOEX: {error}") from error
 
-        for row in rows:
-            if str(row.get("SECID", "")).upper() == normalized_ticker:
-                quote = {
-                    "SECID": normalized_ticker,
-                    "LAST": float(row.get("LAST") or 0.0),
-                    "CHANGE": float(row.get("CHANGE") or 0.0),
-                    "VOLTODAY": float(row.get("VOLTODAY") or 0.0),
-                    "BID": float(row.get("BID") or 0.0),
-                    "OFFER": float(row.get("OFFER") or 0.0),
-                    "UPDATETIME": str(row.get("UPDATETIME") or ""),
-                }
-                self._cache_set(cache_key, quote, self.settings.market_quote_cache_ttl)
-                return quote
-        raise TickerNotFoundError(f"Тикер {normalized_ticker} не найден на TQBR")
+        market_data = raw_payload.get("marketdata", {})
+        market_columns = list(market_data.get("columns", []))
+        market_rows = list(market_data.get("data", []))
+        security_data = raw_payload.get("securities", {})
+        security_columns = list(security_data.get("columns", []))
+        security_rows = list(security_data.get("data", []))
+        if not market_columns or not market_rows:
+            raise MarketDataError("MOEX не вернул marketdata для запрошенного тикера.")
+
+        market_row = market_rows[0]
+        market_map = {market_columns[idx]: market_row[idx] for idx in range(min(len(market_columns), len(market_row)))}
+        security_map: dict[str, Any] = {}
+        if security_columns and security_rows:
+            security_row = security_rows[0]
+            security_map = {
+                security_columns[idx]: security_row[idx]
+                for idx in range(min(len(security_columns), len(security_row)))
+            }
+
+        last = float(market_map.get("LAST") or 0.0)
+        bid = float(market_map.get("BID") or 0.0)
+        offer = float(market_map.get("OFFER") or 0.0)
+        prevprice = float(security_map.get("PREVPRICE") or 0.0)
+        lclose = float(market_map.get("LCLOSEPRICE") or 0.0)
+
+        effective_price = last
+        price_source = "last"
+        if effective_price <= 0:
+            for source_name, value in (
+                ("prevprice", prevprice),
+                ("lcloseprice", lclose),
+                ("bid", bid),
+                ("offer", offer),
+            ):
+                if value > 0:
+                    effective_price = value
+                    price_source = source_name
+                    break
+
+        if effective_price <= 0:
+            raise MarketDataError(
+                f"Биржа не вернула валидную цену для {normalized_ticker}: LAST/PREVPRICE/BID/OFFER пустые."
+            )
+
+        quote = {
+            "SECID": normalized_ticker,
+            "LAST": effective_price,
+            "CHANGE": float(market_map.get("LASTCHANGE") or market_map.get("CHANGE") or 0.0),
+            "VOLTODAY": float(market_map.get("VOLTODAY") or 0.0),
+            "BID": bid,
+            "OFFER": offer,
+            "UPDATETIME": str(market_map.get("UPDATETIME") or market_map.get("SYSTIME") or ""),
+            "PRICE_SOURCE": price_source,
+        }
+        self._cache_set(cache_key, quote, self.settings.market_quote_cache_ttl)
+        return quote
 
     def get_candles(self, ticker: str, date_from: str, date_to: str, interval: int = 24) -> list[dict]:
         """Возвращает свечи OHLCV за период."""

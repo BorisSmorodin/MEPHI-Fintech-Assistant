@@ -78,7 +78,9 @@ def chat() -> None:
             typer.echo("Завершение сессии.")
             break
         if command_result.action == "clear":
+            last_state = None
             typer.clear()
+            typer.echo("Контекст очищен.")
             continue
         if command_result.action == "debug":
             typer.echo(command_result.message or "Debug: нет данных.")

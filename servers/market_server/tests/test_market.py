@@ -52,21 +52,29 @@ def test_get_stock_quote_success(monkeypatch) -> None:
     """Проверяет успешное получение котировки."""
     client = _make_client(monkeypatch)
 
-    def fake_get_board_securities(*_args, **_kwargs):
-        return [
-            {"SECID": "SBER", "LAST": 300.5, "CHANGE": 1.2, "VOLTODAY": 10000, "BID": 300.4, "OFFER": 300.6, "UPDATETIME": "12:00:00"}
-        ]
-
-    monkeypatch.setattr("servers.market_server.moex_client.apimoex.get_board_securities", fake_get_board_securities)
+    monkeypatch.setattr(
+        "servers.market_server.moex_client.MoexClient._request_json",
+        lambda *_args, **_kwargs: {
+            "marketdata": {
+                "columns": ["SECID", "LAST", "LASTCHANGE", "VOLTODAY", "BID", "OFFER", "UPDATETIME"],
+                "data": [["SBER", 300.5, 1.2, 10000, 300.4, 300.6, "12:00:00"]],
+            },
+            "securities": {"columns": ["PREVPRICE"], "data": [[299.0]]},
+        },
+    )
     result = client.get_stock_quote("sber")
     assert result["SECID"] == "SBER"
     assert result["LAST"] == 300.5
+    assert result["PRICE_SOURCE"] == "last"
 
 
 def test_get_stock_quote_ticker_not_found(monkeypatch) -> None:
     """Проверяет ошибку при неизвестном тикере."""
     client = _make_client(monkeypatch)
-    monkeypatch.setattr("servers.market_server.moex_client.apimoex.get_board_securities", lambda *_args, **_kwargs: [])
+    def _raise_404(*_args, **_kwargs):
+        raise requests.HTTPError("404")
+
+    monkeypatch.setattr("servers.market_server.moex_client.MoexClient._request_json", _raise_404)
     with pytest.raises(TickerNotFoundError):
         client.get_stock_quote("XXXX")
 
@@ -130,13 +138,17 @@ def test_cache_hit_and_expiration(monkeypatch) -> None:
     client = _make_client(monkeypatch, time_provider=time_provider)
     call_counter = {"count": 0}
 
-    def fake_get_board_securities(*_args, **_kwargs):
+    def fake_request_json(*_args, **_kwargs):
         call_counter["count"] += 1
-        return [
-            {"SECID": "SBER", "LAST": 300.5, "CHANGE": 1.2, "VOLTODAY": 10000, "BID": 300.4, "OFFER": 300.6, "UPDATETIME": "12:00:00"}
-        ]
+        return {
+            "marketdata": {
+                "columns": ["SECID", "LAST", "LASTCHANGE", "VOLTODAY", "BID", "OFFER", "UPDATETIME"],
+                "data": [["SBER", 300.5, 1.2, 10000, 300.4, 300.6, "12:00:00"]],
+            },
+            "securities": {"columns": ["PREVPRICE"], "data": [[299.0]]},
+        }
 
-    monkeypatch.setattr("servers.market_server.moex_client.apimoex.get_board_securities", fake_get_board_securities)
+    monkeypatch.setattr("servers.market_server.moex_client.MoexClient._request_json", fake_request_json)
 
     first = client.get_stock_quote("SBER")
     second = client.get_stock_quote("SBER")
@@ -147,6 +159,41 @@ def test_cache_hit_and_expiration(monkeypatch) -> None:
     third = client.get_stock_quote("SBER")
     assert third["SECID"] == "SBER"
     assert call_counter["count"] == 2
+
+
+def test_get_stock_quote_uses_fallback_price_source(monkeypatch) -> None:
+    """Проверяет fallback на PREVPRICE, если LAST отсутствует."""
+    client = _make_client(monkeypatch)
+    monkeypatch.setattr(
+        "servers.market_server.moex_client.MoexClient._request_json",
+        lambda *_args, **_kwargs: {
+            "marketdata": {
+                "columns": ["SECID", "LAST", "LASTCHANGE", "BID", "OFFER", "UPDATETIME"],
+                "data": [["SBER", 0.0, 0.0, 0.0, 0.0, "12:00:00"]],
+            },
+            "securities": {"columns": ["PREVPRICE"], "data": [[321.25]]},
+        },
+    )
+    result = client.get_stock_quote("SBER")
+    assert result["LAST"] == 321.25
+    assert result["PRICE_SOURCE"] == "prevprice"
+
+
+def test_get_stock_quote_raises_when_all_prices_empty(monkeypatch) -> None:
+    """Проверяет ошибку при отсутствии всех ценовых полей."""
+    client = _make_client(monkeypatch)
+    monkeypatch.setattr(
+        "servers.market_server.moex_client.MoexClient._request_json",
+        lambda *_args, **_kwargs: {
+            "marketdata": {
+                "columns": ["SECID", "LAST", "LASTCHANGE", "BID", "OFFER", "UPDATETIME"],
+                "data": [["SBER", 0.0, 0.0, 0.0, 0.0, ""]],
+            },
+            "securities": {"columns": ["PREVPRICE"], "data": [[0.0]]},
+        },
+    )
+    with pytest.raises(MarketDataError):
+        client.get_stock_quote("SBER")
 
 
 def test_get_index_analytics_contract(monkeypatch) -> None:
